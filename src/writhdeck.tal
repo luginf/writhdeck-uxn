@@ -1,0 +1,464 @@
+( writhdeck.tal -- amorcage d'un portage Uxntal de WrithDeck, en MODE
+| CONSOLE (device Console, sequences ANSI/VT100 -- PAS le device
+| Screen). Voir ../README.md pour le perimetre exact et les
+| simplifications assumees pour cet amorcage : curseur en decalage
+| OCTET dans le tampon (pas de decodage UTF-8 pour la logique de
+| curseur -- le contenu lui-meme reste un passthrough octet-a-octet
+| fidele, donc les accents s'affichent/se sauvegardent correctement),
+| pas de word-wrap (troncature a la largeur du terminal), pas de
+| detection dynamique de la taille du terminal (24x80 fixe), pas de
+| tests automatises.
+|
+| Polarite de "?{ }" (verifiee empiriquement avec un mini-programme
+| autonome, PAS documentee de memoire) : le bloc s'execute quand
+| l'octet depile est EXACTEMENT 0, il est SAUTE si l'octet est non nul.
+| REGLE MECANIQUE appliquee PARTOUT dans ce fichier, sans exception,
+| pour eviter les erreurs de polarite (une premiere version de ce
+| fichier en avait plusieurs, silencieuses -- pas d'"optimisation"
+| tant que la nouvelle version n'a pas tourne) : pour "si CONDITION
+| alors BLOC", toujours calculer le flag NATUREL de CONDITION avec
+| l'opcode qui correspond mot-a-mot (EQU pour "==", NEQ pour "!=", LTH
+| pour "<", GTH pour ">"), PUIS TOUJOURS ajouter "#00 EQU" avant "?{ }". )
+
+( pas de champ &vector ici -- System n'en a pas (contrairement a
+| Console/File), contrairement a ce qu'une premiere version de ce
+| fichier supposait par erreur (decalant &state a 0x0d au lieu de
+| 0x0f, l'adresse REELLEMENT verifiee par uxncli.c pour detecter l'arret
+| -- ecrire a 0x0d ne faisait donc rien, bug reel rencontre en testant :
+| Ctrl+Q affichait la sequence de sortie ANSI mais ne quittait jamais).
+| Layout verifie dans uxn/src/devices/system.c (wst/rst=0x04/0x05,
+| metadata=0x06-07, state=0x0f), identique a celui de kibi.tal. )
+|04 @System/wst $1 &rst $1 &metadata $2 [ $6 ] &debug $1 &state $1
+|10 @Console &vector $2 &read $1 &pad $4 &type $1 &write $1 &error $1
+|a0 @File &vector $2 &success $2 &stat $2 &delete $1 &append $1 &name $2 &length $2 &read $2 &write $2
+
+%putc { .Console/write DEO }
+%csi { #1b .Console/write DEO #5b .Console/write DEO }
+%semicolon { #3b .Console/write DEO }
+
+( zero-page : scalaires du programme, places apres Console (0x10) et
+| AVANT File (0xa0) -- on n'utilise pas Screen/Controller/Mouse/
+| Datetime, cette plage est donc libre. )
+|0020
+@wd-rows        $2  ( hauteur terminal, fixe a cet amorcage )
+@wd-cols        $2  ( largeur terminal, fixe a cet amorcage )
+@wd-cursor      $2  ( decalage OCTET du curseur dans wd-buf )
+@wd-buflen      $2  ( octets utilises dans wd-buf )
+@wd-scroll      $2  ( decalage OCTET du debut de la premiere ligne visible )
+@wd-esc-state   $1  ( 0=idle 1=vu ESC 2=vu ESC[ )
+@wd-dirty       $1
+@wd-fname-len   $1
+@wd-arg-num     $1  ( index du prochain argument argv, voir on-argv )
+@wd-dcount      $1  ( wd-print-dec : nombre de chiffres empiles sur rst )
+@wd-tmp1        $2
+@wd-tmp2        $2
+@wd-tmp3        $2
+@wd-tmp4        $2
+@wd-tmp5        $2
+@wd-tmp6        $2  ( scratch prive de count-lines -- NE JAMAIS l'utiliser
+                    | ailleurs : plusieurs appelants (clamp-scroll,
+                    | wd-position-cursor) gardent wd-tmp1..5 vivants a
+                    | travers l'appel a count-lines, ce que wd-tmp6 seul
+                    | garantit de ne jamais ecraser (bug reel rencontre
+                    | en testant : count-lines utilisait wd-tmp1, ecrasant
+                    | silencieusement la valeur que clamp-scroll y avait
+                    | rangee, provoquant une boucle qui ne se terminait
+                    | jamais). )
+
+|0100
+
+@on-reset ( -> )
+    ;wd-meta .System/metadata DEO2
+    alt-buf-on
+    #0000 .wd-arg-num STZ2
+    #00 .wd-fname-len STZ
+    ;on-argv .Console/vector DEO2
+BRK
+
+( --- phase 1 : capture du premier argument (chemin de fichier) ---
+| Console/type : STD=1 (frappe normale -- signifie ICI qu'aucun
+| argument n'a ete passe DU TOUT, le premier octet recu est deja une
+| vraie frappe), ARG=2 (octet d'un argument), EOA=3 (fin d'un
+| argument, il en reste), END=4 (fin du dernier argument). Seul le
+| PREMIER argument est capture (assez pour "chemin optionnel", comme
+| writhdeck-asm) ; les octets d'arguments suivants sont lus (il le
+| faut, l'hote les envoie de toute facon) mais ignores. )
+@on-argv ( -> )
+    .Console/type DEI
+    DUP #02 EQU #00 EQU ?{
+        ( type == ARG : accumule seulement si on est encore dans le 1er argument )
+        POP
+        .wd-arg-num LDZ2 #0000 NEQ2 #00 EQU ?{ BRK }
+        .Console/read DEI
+        ;wd-fname #00 .wd-fname-len LDZ ADD2 STA
+        .wd-fname-len LDZ INC .wd-fname-len STZ
+        BRK }
+    DUP #03 EQU #00 EQU ?{ POP .wd-arg-num LDZ2 INC2 .wd-arg-num STZ2 BRK }
+    ( sinon : END(4) ou STD(1, aucun argument passe) -> fin de la
+    | capture, on demarre l'editeur )
+    POP
+    #00 ;wd-fname #00 .wd-fname-len LDZ ADD2 STA   ( NUL-terminer le nom de fichier )
+    finish-boot
+BRK
+
+@finish-boot ( -- )
+    #0018 .wd-rows STZ2
+    #0050 .wd-cols STZ2
+    .wd-fname-len LDZ #00 NEQ #00 EQU ?{ load-file }
+    #0000 .wd-cursor STZ2
+    #0000 .wd-scroll STZ2
+    #00 .wd-dirty STZ
+    ;on-keypress .Console/vector DEO2
+    wd-render
+JMP2r
+
+( --- chargement/sauvegarde fichier --- )
+@load-file ( -- )
+    ;wd-fname .File/name DEO2
+    #ef00 .File/length DEO2
+    ;wd-buf .File/read DEO2
+    .File/success DEI2 .wd-buflen STZ2
+JMP2r
+
+@save-file ( -- )
+    .wd-fname-len LDZ #00 NEQ #00 EQU ?{
+        ;wd-fname .File/name DEO2
+        .wd-buflen LDZ2 .File/length DEO2
+        ;wd-buf .File/write DEO2
+        #00 .wd-dirty STZ
+    }
+JMP2r
+
+( --- boucle interactive --- )
+@on-keypress ( -> )
+    .Console/read DEI
+    .wd-esc-state LDZ #00 NEQ #00 EQU ?{ handle-escape BRK }
+
+    DUP #1b EQU #00 EQU ?{ POP #01 .wd-esc-state STZ BRK }
+    DUP #11 EQU #00 EQU ?{ POP quit BRK }
+    DUP #13 EQU #00 EQU ?{ POP save-file wd-render BRK }
+    DUP #0d EQU #00 EQU ?{ POP #0a insert-byte after-edit BRK }
+    DUP #0a EQU #00 EQU ?{ POP #0a insert-byte after-edit BRK }
+    DUP #7f EQU #00 EQU ?{ POP backspace after-edit BRK }
+    DUP #20 LTH #00 EQU ?{ POP BRK }
+    insert-byte after-edit
+BRK
+
+@handle-escape ( byte -- )
+    .wd-esc-state LDZ #01 EQU #00 EQU ?{
+        DUP #5b EQU #00 EQU ?{ POP #02 .wd-esc-state STZ BRK }
+        POP #00 .wd-esc-state STZ BRK }
+    #00 .wd-esc-state STZ
+    DUP #41 EQU #00 EQU ?{ POP move-up after-move BRK }
+    DUP #42 EQU #00 EQU ?{ POP move-down after-move BRK }
+    DUP #43 EQU #00 EQU ?{ POP move-right after-move BRK }
+    DUP #44 EQU #00 EQU ?{ POP move-left after-move BRK }
+    DUP #48 EQU #00 EQU ?{ POP move-home after-move BRK }
+    DUP #46 EQU #00 EQU ?{ POP move-end after-move BRK }
+    POP
+BRK
+
+@after-edit ( -- )
+    #01 .wd-dirty STZ
+    clamp-scroll
+    wd-render
+JMP2r
+
+@after-move ( -- )
+    clamp-scroll
+    wd-render
+JMP2r
+
+@quit ( -- )
+    alt-buf-off
+    #80 .System/state DEO
+BRK
+
+( --- edition : deplacement du tampon plat --- )
+@shift-right ( -- )
+    ( ouvre un trou d'un octet en .wd-cursor, en decalant [cursor,buflen)
+    | vers le haut d'un cran, EN PARTANT DE LA FIN (sinon on ecrase les
+    | octets pas encore copies). )
+    .wd-buflen LDZ2 .wd-tmp1 STZ2
+    &loop
+        .wd-tmp1 LDZ2 .wd-cursor LDZ2 GTH2 #00 EQU ?{
+            ;wd-buf .wd-tmp1 LDZ2 ADD2 .wd-tmp2 STZ2
+            ;wd-buf .wd-tmp1 LDZ2 #0001 SUB2 ADD2 LDA
+            .wd-tmp2 LDZ2 STA
+            .wd-tmp1 LDZ2 #0001 SUB2 .wd-tmp1 STZ2
+            !&loop }
+JMP2r
+
+@shift-left ( -- )
+    ( retire wd-buf[cursor-1] en decalant [cursor,buflen) vers le bas
+    | d'un cran, en partant du DEBUT (sens sur ici, pas de recouvrement). )
+    .wd-cursor LDZ2 .wd-tmp1 STZ2
+    &loop
+        .wd-tmp1 LDZ2 .wd-buflen LDZ2 LTH2 #00 EQU ?{
+            ;wd-buf .wd-tmp1 LDZ2 #0001 SUB2 ADD2 .wd-tmp2 STZ2
+            ;wd-buf .wd-tmp1 LDZ2 ADD2 LDA
+            .wd-tmp2 LDZ2 STA
+            .wd-tmp1 LDZ2 #0001 ADD2 .wd-tmp1 STZ2
+            !&loop }
+JMP2r
+
+@insert-byte ( byte -- )
+    STH
+    shift-right
+    STHr
+    .wd-cursor LDZ2 ;wd-buf ADD2 STA
+    .wd-cursor LDZ2 #0001 ADD2 .wd-cursor STZ2
+    .wd-buflen LDZ2 #0001 ADD2 .wd-buflen STZ2
+JMP2r
+
+@backspace ( -- )
+    .wd-cursor LDZ2 #0000 NEQ2 #00 EQU ?{
+        shift-left
+        .wd-buflen LDZ2 #0001 SUB2 .wd-buflen STZ2
+        .wd-cursor LDZ2 #0001 SUB2 .wd-cursor STZ2 }
+JMP2r
+
+( --- deplacement --- )
+@move-left ( -- )
+    .wd-cursor LDZ2 #0000 NEQ2 #00 EQU ?{
+        .wd-cursor LDZ2 #0001 SUB2 .wd-cursor STZ2 }
+JMP2r
+
+@move-right ( -- )
+    .wd-cursor LDZ2 .wd-buflen LDZ2 LTH2 #00 EQU ?{
+        .wd-cursor LDZ2 #0001 ADD2 .wd-cursor STZ2 }
+JMP2r
+
+@move-home ( -- )
+    .wd-cursor LDZ2 line-start .wd-cursor STZ2
+JMP2r
+
+@move-end ( -- )
+    .wd-cursor LDZ2 line-end .wd-cursor STZ2
+JMP2r
+
+@move-up ( -- )
+    .wd-cursor LDZ2 line-start .wd-tmp1 STZ2
+    .wd-tmp1 LDZ2 #0000 NEQ2 #00 EQU ?{
+        .wd-cursor LDZ2 .wd-tmp1 LDZ2 SUB2 .wd-tmp2 STZ2
+        .wd-tmp1 LDZ2 #0001 SUB2 line-start .wd-tmp3 STZ2
+        .wd-tmp3 LDZ2 .wd-tmp2 LDZ2 ADD2 .wd-tmp1 LDZ2 #0001 SUB2 min2 .wd-cursor STZ2 }
+JMP2r
+
+@move-down ( -- )
+    .wd-cursor LDZ2 line-start .wd-tmp1 STZ2
+    .wd-cursor LDZ2 line-end .wd-tmp5 STZ2
+    .wd-tmp5 LDZ2 .wd-buflen LDZ2 LTH2 #00 EQU ?{
+        .wd-cursor LDZ2 .wd-tmp1 LDZ2 SUB2 .wd-tmp2 STZ2
+        .wd-tmp5 LDZ2 #0001 ADD2 .wd-tmp3 STZ2
+        .wd-tmp3 LDZ2 line-end .wd-tmp4 STZ2
+        .wd-tmp3 LDZ2 .wd-tmp2 LDZ2 ADD2 .wd-tmp4 LDZ2 min2 .wd-cursor STZ2 }
+JMP2r
+
+( --- utilitaires sur lignes --- )
+@line-start ( pos* -- start* )
+    &loop
+        DUP2 #0000 NEQ2 #00 EQU ?{
+            DUP2 #0001 SUB2 ;wd-buf ADD2 LDA #0a NEQ #00 EQU ?{
+                #0001 SUB2 !&loop } }
+JMP2r
+
+@line-end ( pos* -- end* )
+    &loop
+        DUP2 .wd-buflen LDZ2 LTH2 #00 EQU ?{
+            DUP2 ;wd-buf ADD2 LDA #0a NEQ #00 EQU ?{
+                #0001 ADD2 !&loop } }
+JMP2r
+
+@count-lines ( from* to* -- n* )
+    STH2
+    #0000 .wd-tmp6 STZ2
+    &loop
+        DUP2 STH2kr LTH2 #00 EQU ?{
+            DUP2 ;wd-buf ADD2 LDA #0a EQU #00 EQU ?{
+                .wd-tmp6 LDZ2 #0001 ADD2 .wd-tmp6 STZ2 }
+            #0001 ADD2
+            !&loop }
+    POP2r
+    POP2
+    .wd-tmp6 LDZ2
+JMP2r
+
+( NIP2/POP2 dans le bon sens : stack (a b) apres le flag consomme --
+| si a<b, on veut GARDER a (le plus petit), donc POP2 (jette le TOP=b) ;
+| sinon on veut garder b, donc NIP2 (jette le second=a). Bug reel
+| rencontre en testant : ces deux-la etaient inverses, min2 renvoyait
+| le MAX -- move-up/move-down clampaient systematiquement le curseur
+| au bout de la ligne au lieu de la colonne visee. )
+@min2 ( a* b* -- min* )
+    OVR2 OVR2 LTH2 #00 EQU ?{ POP2 JMP2r }
+    NIP2
+JMP2r
+
+@clamp-scroll ( -- )
+    .wd-cursor LDZ2 line-start .wd-tmp1 STZ2
+    .wd-tmp1 LDZ2 .wd-scroll LDZ2 LTH2 #00 EQU ?{
+        .wd-tmp1 LDZ2 .wd-scroll STZ2
+        JMP2r }
+    ( boucle : tant que le nombre de lignes entre wd-scroll et la ligne
+    | du curseur est >= au nombre de rangees utilisables, avance
+    | wd-scroll d'une ligne. "count-lines(...) < usable" SANS inversion
+    | ici (contrairement a la plupart des boucles de ce fichier) : on
+    | veut continuer PRECISEMENT quand la comparaison brute est FAUSSE
+    | (count >= usable, ca ne rentre pas encore) -- inverser ici serait
+    | boucler indefiniment des que wd-scroll depasse la ligne du
+    | curseur (bug reel rencontre en testant : "t" imprime en boucle
+    | infinie, wd-scroll grimpant sans jamais s'arreter). )
+    &loop
+        .wd-scroll LDZ2 .wd-tmp1 LDZ2 count-lines .wd-rows LDZ2 #0001 SUB2 LTH2 ?{
+            .wd-scroll LDZ2 line-end #0001 ADD2 .wd-scroll STZ2
+            !&loop }
+JMP2r
+
+( --- rendu --- )
+( imprime la ligne LOGIQUE qui commence a .wd-tmp1 (decalage octet),
+| tronquee a .wd-cols, avance .wd-tmp1 juste APRES le '\n' trouve (ou
+| jusqu'a .wd-buflen si aucun) -- n'imprime PAS le '\n' lui-meme, c'est
+| l'appelant qui gere la sequence de fin de ligne. )
+@render-row ( -- )
+    #0000 .wd-tmp4 STZ2
+    &loop
+        .wd-tmp1 LDZ2 .wd-buflen LDZ2 LTH2 #00 EQU ?{
+            .wd-tmp1 LDZ2 ;wd-buf ADD2 LDA
+            DUP #0a NEQ #00 EQU ?{
+                ( octet != '\n' : imprime si la place le permet, avance, boucle )
+                .wd-tmp4 LDZ2 .wd-cols LDZ2 LTH2 #00 EQU ?{
+                    putc
+                    .wd-tmp4 LDZ2 #0001 ADD2 .wd-tmp4 STZ2
+                    .wd-tmp1 LDZ2 #0001 ADD2 .wd-tmp1 STZ2
+                    !&loop }
+                POP
+                .wd-tmp1 LDZ2 #0001 ADD2 .wd-tmp1 STZ2
+                !&loop }
+            ( octet == '\n' : consomme, avance apres, fin de cette rangee )
+            POP
+            .wd-tmp1 LDZ2 #0001 ADD2 .wd-tmp1 STZ2
+            JMP2r }
+JMP2r
+
+@wd-render ( -- )
+    hide-cursor
+    reset-cursor
+    .wd-scroll LDZ2 .wd-tmp1 STZ2
+    #0000 .wd-tmp2 STZ2
+    &row-loop
+        .wd-tmp2 LDZ2 .wd-rows LDZ2 #0001 SUB2 LTH2 #00 EQU ?{
+            render-row
+            clear-eol
+            #0a putc
+            .wd-tmp2 LDZ2 #0001 ADD2 .wd-tmp2 STZ2
+            !&row-loop }
+    wd-status-bar
+    wd-position-cursor
+    show-cursor
+JMP2r
+
+@wd-status-bar ( -- )
+    .wd-rows LDZ2 #0001 SUB2 .wd-tmp5 STZ2
+    csi
+    .wd-tmp5 LDZ2 #0001 ADD2 wd-print-dec
+    semicolon
+    #0001 wd-print-dec
+    #48 putc
+    ansi-reverse
+    .wd-fname-len LDZ #00 NEQ #00 EQU ?{ wd-fname-status }
+    .wd-fname-len LDZ #00 EQU #00 EQU ?{ ;draft-label str-log }
+    ;status-sep str-log
+    .wd-cursor LDZ2 line-start count-lines-from-zero #0001 ADD2 wd-print-dec
+    ;status-comma str-log
+    .wd-cursor LDZ2 .wd-cursor LDZ2 line-start SUB2 #0001 ADD2 wd-print-dec
+    .wd-dirty LDZ #00 NEQ #00 EQU ?{ ;status-dirty str-log }
+    clear-eol
+    ansi-reset
+JMP2r
+
+@wd-fname-status ( -- )
+    ;wd-fname str-log
+JMP2r
+
+@count-lines-from-zero ( to* -- n* )
+    #0000 SWP2 count-lines
+JMP2r
+
+@wd-position-cursor ( -- )
+    .wd-cursor LDZ2 line-start .wd-tmp1 STZ2
+    .wd-scroll LDZ2 .wd-tmp1 LDZ2 count-lines .wd-tmp2 STZ2
+    .wd-cursor LDZ2 .wd-tmp1 LDZ2 SUB2 .wd-tmp3 STZ2
+    csi
+    .wd-tmp2 LDZ2 #0001 ADD2 wd-print-dec
+    semicolon
+    .wd-tmp3 LDZ2 #0001 ADD2 wd-print-dec
+    #48 putc
+JMP2r
+
+( dword* -- : imprime n en decimal, sans zeros de tete, sans saut de
+| ligne. Chiffres empiles sur la pile de retour (LSB extrait en premier
+| -- donc empiler-au-fur-et-a-mesure puis depiler donne le bon ordre,
+| MSB en premier), narrowing short->octet via STH POP STHr (meme
+| technique que shrt/dec-str dans kibi.tal). )
+@wd-print-dec ( n* -- )
+    DUP2 #0000 NEQ2 #00 EQU ?{
+        #00 .wd-dcount STZ
+        &extract
+            DUP2 #0000 NEQ2 #00 EQU ?{
+                DUP2 #000a DIV2
+                DUP2 #000a MUL2
+                STH2 SWP2 STH2r SUB2
+                STH POP STHr
+                #30 ADD
+                STH
+                .wd-dcount LDZ INC .wd-dcount STZ
+                !&extract }
+        POP2
+        &print
+            .wd-dcount LDZ #00 NEQ #00 EQU ?{
+                STHr putc
+                .wd-dcount LDZ #01 SUB .wd-dcount STZ
+                !&print }
+        JMP2r }
+    POP2 #30 putc
+JMP2r
+
+( --- helpers ANSI --- )
+@str-log ( str* -- )
+    LDAk #00 NEQ #00 EQU ?{
+        LDAk putc
+        INC2
+        !str-log }
+    POP2
+JMP2r
+
+@alt-buf-on ( -- ) ;ansi-alt-buf-on str-log JMP2r
+@alt-buf-off ( -- ) ;ansi-alt-buf-off str-log JMP2r
+@hide-cursor ( -- ) ;ansi-hide-cursor str-log JMP2r
+@show-cursor ( -- ) ;ansi-show-cursor str-log JMP2r
+@reset-cursor ( -- ) ;ansi-reset-cursor str-log JMP2r
+@clear-eol ( -- ) ;ansi-clear-eol str-log JMP2r
+@ansi-reverse ( -- ) ;ansi-reverse-seq str-log JMP2r
+@ansi-reset ( -- ) ;ansi-reset-seq str-log JMP2r
+
+@ansi-alt-buf-on [ 1b "[?1049h 00 ]
+@ansi-alt-buf-off [ 1b "[?1049l 00 ]
+@ansi-hide-cursor [ 1b "[?25l 00 ]
+@ansi-show-cursor [ 1b "[?25h 00 ]
+@ansi-reset-cursor [ 1b "[H 00 ]
+@ansi-clear-eol [ 1b "[K 00 ]
+@ansi-reverse-seq [ 1b "[7m 00 ]
+@ansi-reset-seq [ 1b "[0m 00 ]
+
+@draft-label "[draft] 00
+@status-sep 20 "-- 20 00
+@status-comma 2c 00
+@status-dirty 20 "[+] 00
+
+@wd-meta [ $1
+    "writhdeck-uxn 0a
+    "amorce 20 "console-mode 0a 00 ]
+
+|1000 @wd-fname $100
+|1100 @wd-buf $ef00
