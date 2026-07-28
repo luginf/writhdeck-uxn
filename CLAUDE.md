@@ -145,6 +145,212 @@ sur le système, ou un `..` s'échappant d'un cwd sans rapport, peut être
 bloqué par `uxncli` avant même que le rom ne le voie. Voir aussi la
 note "Sandbox" du `README.md`.
 
+### 7. `DUP`/`POP` pour dupliquer un octet avant deux tests successifs : source de résidu de pile
+
+Un idiome tentant pour "tester un octet contre deux valeurs" est
+`DUP #20 EQU ?{ ... } DUP #09 EQU ?{ ... } POP` (dupliquer une fois,
+consommer une copie par test, jeter l'original à la fin). Le risque :
+si UN SEUL chemin (une branche prise, un retour anticipé au milieu du
+bloc) oublie ce `POP` final, il reste un octet parasite sur la pile de
+travail — exactement la classe de bug de la note System (`&vector`
+fantôme) et de `min2` ci-dessus, sauf que celui-ci ne se voit même pas
+à la relecture rapide du code, il faut tracer chaque branche à la main.
+
+**Ce qui a été fait dans `is-heading`** (détection de titre Markdown,
+ajoutée pour la coloration syntaxique) : éviter `DUP`/`POP` entièrement
+— relire l'octet en mémoire (`.wd-tmpN LDZ2 ;wd-buf ADD2 LDA`) à CHAQUE
+comparaison plutôt que de garder une copie sur la pile. Plus verbeux
+(une lecture mémoire de plus par comparaison, coût négligeable à cette
+échelle), mais chaque bloc `?{ }` devient trivialement équilibré :
+rien n'est poussé sans être dépilé sur TOUS les chemins de CE bloc
+précis, donc il n'y a plus besoin de tracer l'ensemble de la routine
+à la main pour vérifier l'équilibre de la pile.
+
+**Comment appliquer :** pour toute nouvelle routine qui teste un même
+octet contre plusieurs valeurs, préférer relire depuis la mémoire
+(zero-page ou `;wd-buf ADD2 LDA`) à chaque comparaison plutôt que
+`DUP`/`POP` — surtout si la routine a plusieurs points de sortie
+(`JMP2r`/`BRK` anticipés), où il est facile d'oublier le `POP` sur un
+chemin de sortie précoce.
+
+### 8. uxn/Varvara n'expose AUCUNE variable d'environnement au programme
+
+Pas de `getenv`, pas d'accès a `$HOME` depuis Uxntal — confirmé en
+cherchant dans `uxn/src/` : aucun device n'expose l'environnement du
+process hote. Consequence concrete : le repli de
+`writhdeck-c`/`writhdeck-asm` sur `$HOME/Documents/writhdeck/
+writhdeck.ini` quand `writhd.ini` est absent du repertoire courant est
+**structurellement impossible** a porter ici, pas juste "pas encore
+fait". `load-config` (lecture de `writhd.ini` pour les marges) ne lit
+QUE le repertoire courant, avec une note explicite dans son commentaire
+d'en-tete et dans le README expliquant pourquoi le second chemin
+n'existe pas dans ce port.
+
+**Comment appliquer :** avant de porter une fonctionnalite C/asm qui
+suppose une variable d'environnement, verifier d'abord si un device uxn
+l'expose (chercher dans `uxn/src/devices/*.c`) plutot que de supposer
+qu'un contournement existe — pour `$HOME` specifiquement, il n'y en a
+aucun.
+
+### 9. Reutiliser `wd-buf` comme tampon scratch AVANT le chargement du vrai fichier
+
+`load-config` lit `writhd.ini` directement DANS `wd-buf` (le tampon de
+~61 Ko du document) plutot que de reserver un tampon .ini dedie —
+`wd-buf` n'a AUCUNE place libre pour un tampon separe, il s'etend deja
+jusqu'a la toute fin des 64 Ko adressables (`|1100 @wd-buf $ef00` =
+`0x1100+0xef00 = 0x10000` pile). Cette reutilisation est sure
+UNIQUEMENT parce que `load-config` tourne dans `finish-boot` AVANT
+`load-file` (qui ecrasera `wd-buf` avec le vrai contenu) et avant que
+quoi que ce soit d'autre n'y touche. `.wd-buflen` est aussi
+DELIBEREMENT repointee vers la taille du fichier `.ini` le temps du
+parsing (pour reutiliser `line-end`/`buf-has-prefix` tels quels sans
+leur passer une borne separee) — ce qui veut dire que `finish-boot`
+DOIT explicitement remettre `.wd-buflen` a 0 pour le cas "brouillon
+vide" juste apres `load-config` (avant cet ajout, ce cas s'appuyait
+IMPLICITEMENT sur le fait que la RAM uxn demarre a zero et n'avait
+jamais besoin d'une remise a zero explicite — ça a change des que
+`load-config` a commence a l'ecrire).
+
+**Comment appliquer :** toute nouvelle routine de boot qui reutilise
+`wd-buf`/`wd-buflen` comme scratch temporaire doit imperativement
+tourner AVANT `load-file`, et `finish-boot` doit explicitement remettre
+`wd-buflen` dans l'etat attendu par la suite (0 pour un brouillon vide)
+juste apres — ne JAMAIS compter sur l'etat "RAM demarre a zero" une
+fois qu'une routine de boot a deja ecrit dans cette zone.
+
+### 10. Exception documentée à la règle d'inversion : test "est un chiffre"
+
+`parse-ini-value` (parseur `.ini`) teste si un octet est un chiffre
+via `(octet-'0') <= 9` en arithmétique NON SIGNÉE (si `octet<'0'`, la
+soustraction sous-flotte et redevient une valeur énorme, donc une
+SEULE comparaison `GTH` couvre les deux bornes à la fois). Ceci
+introduit une DEUXIÈME exception à la règle "toujours inverser avec
+`#00 EQU` avant `?{ }`" (la première étant la boucle `count>=seuil` de
+`clamp-scroll`, voir plus haut) : le bloc qui accumule le chiffre doit
+s'exécuter sur le FAUX de "diff>9" (c'est un chiffre) — `GTH` brut,
+SANS inversion, correspond déjà exactement à ce que `?{ }` attend (0
+déclenche). L'inverser donnerait le résultat inverse. Vérifié par
+double négation : `GTH #00 EQU #00 EQU` (invert-puis-invert) est
+algébriquement identique à `GTH` seul quand l'entrée est un booléen
+canonique 0/1 — ce qui confirme que "vouloir le bloc sur le FAUX d'une
+comparaison" se traduit par AUCUNE inversion, et "vouloir le bloc sur
+le VRAI" se traduit par UNE SEULE inversion, jamais deux. Voir le
+commentaire directement au-dessus de `@parse-ini-value` dans le code.
+
+**Comment appliquer :** avant d'ajouter une inversion "par réflexe",
+se demander explicitement si le bloc doit s'exécuter sur le VRAI ou le
+FAUX de la comparaison — ce n'est PAS toujours le VRAI (deux exceptions
+déjà rencontrées dans ce fichier, toutes deux dans des boucles
+numériques, pas dans des dispatches de touches/octets classiques où la
+règle par défaut s'est toujours revérifiée correcte jusqu'ici).
+
+### 11. `EQU`/`NEQ`/`GTH`/`LTH` (mode octet) contre `EQU2`/`NEQ2`/`GTH2`/`LTH2` (mode short) — piège le plus coûteux du word-wrap
+
+**Confondre les deux a produit le bug le plus long à isoler de tout ce
+portage** (ajout du word-wrap pour la colonne collante Haut/Bas et le
+défilement en rangées visuelles) : comparer deux valeurs `$2`
+(positions dans le tampon, presque tout ce que ce fichier manipule)
+avec l'opcode SANS le `2` ne compare que les DEUX OCTETS DE POIDS FORT
+restés en haut de pile après un dépilage partiel -- ni une erreur
+d'assemblage, ni un crash, juste un résultat de comparaison
+n'importe-quoi ET un résidu de pile (2 octets non consommés) qui
+continue à circuler sous les valeurs suivantes, décalant TOUT calcul
+ultérieur dans la même routine. Trouvé ici dans `move-up`
+(`.wd-tmp1 LDZ2 .wd-tmp2 LDZ2 EQU` au lieu de `EQU2`) et
+`visual-row-start` (même erreur, deux fois). Symptôme observé, très
+trompeur : le programme ne plantait ni ne bouclait au sens strict --
+il redevenait silencieusement inerte (plus aucune sortie) après un
+Bas/Haut précis, uxncli restant bloqué dans un `read(0, ...)` comme si
+de rien n'était, ce qui ressemblait exactement à "la touche suivante
+n'arrive jamais" plutôt qu'à "une comparaison a mal tourné trois
+fonctions plus haut".
+
+**Comment appliquer :** avant de committer toute nouvelle comparaison,
+vérifier explicitement si les DEUX operandes sont `$1` (octet, ex. un
+octet lu via `LDA`/`LDZ`/`DEI`) ou `$2` (short, ex. une position dans
+`wd-buf`, une largeur, un compteur) -- quasiment tout ce qui vient de
+`LDZ2`/`LDA` sur une adresse construite avec `ADD2`/`;wd-buf` est un
+short. Une astuce de relecture : grep `LDZ2.*LDZ2.*\bEQU\b` (ou NEQ/
+GTH/LTH) sans le `2` dans tout le fichier -- si ça remonte quelque
+chose, c'est presque toujours ce bug (voir aussi le piège #7 plus
+haut, qui recommande de toujours relire l'octet en mémoire plutôt que
+`DUP`/`POP` : ce conseil n'aide PAS ici, puisque le bug est un mauvais
+CHOIX D'OPCODE, pas une histoire de résidu de pile lié à `DUP`).
+
+### 12. Mauvais opcode de comparaison choisi (pas juste polarité inversée) : `visual-row-before`
+
+Distinct du piège #11 (mode octet/short) ET des exceptions de polarité
+(#10, `clamp-scroll`) : `visual-row-before` utilisait `NEQ2` pour
+tester "row-start est-il tout au début du document ?" alors que la
+condition voulue est littéralement "line_start == 0" -- `NEQ2` teste
+l'INVERSE de ce qui était réellement voulu, pas juste la bonne
+comparaison mal polarisée. Trouvé en traçant Haut apres Bas x4 sur un
+document a deux lignes : le curseur revenait immediatement lá où il
+était au lieu de reculer d'une rangée. Corrigé en `EQU2`.
+
+**Comment appliquer :** relire chaque comparaison en la reformulant
+d'abord en français/anglais SANS y penser en opcodes ("est-ce que X
+vaut 0 ?" plutôt que "est-ce que je dois inverser ?"), PUIS choisir
+l'opcode qui correspond mot-à-mot à cette phrase (EQU pour "vaut",
+NEQ pour "ne vaut pas") avant d'appliquer la règle d'inversion du
+piège #1 -- l'ordre compte : choisir le bon opcode d'abord, l'inverser
+ensuite, jamais les deux en même temps de tête.
+
+### 13. `|1000`/`|1100` (bootstrap initial) étaient des adresses codées en dur, jamais revérifiées à mesure que le fichier grossissait
+
+`uxnasm` ne détecte PAS et ne signale RIEN quand une directive `|ADDR`
+rembobine le curseur d'assemblage EN ARRIÈRE par rapport à ce qui a
+déjà été écrit plus loin -- elle se contente de repositionner le
+curseur, silencieusement, laissant la réservation suivante (`$N`)
+écraser/chevaucher tout ce qui avait déjà été assemblé dans cette
+plage. Rencontré ici : le word-wrap + les marges + le parseur `.ini`
+ont fait grossir le code au-delà de `0x1000` (`|1000 @wd-fname $100`),
+si bien qu'`ini-filename`/`ini-section-editor`/`wd-meta` atterrissaient
+À L'INTÉRIEUR de l'espace réservé à `wd-fname`, corrompant leur
+contenu -- symptôme observé : blocage silencieux au tout premier
+Ctrl+Q après ouverture d'un brouillon vide, qui n'avait EN RÉALITÉ
+aucun rapport avec Ctrl+Q lui-même (juste la première chose lue depuis
+de la mémoire déjà corrompue). Corrigé en repoussant `|1000`→`|1400`
+et `|1100`→`|1500`, avec une marge confortable au-dessus de la taille
+réellement utilisée à ce moment (~0x1052).
+
+**Comment appliquer :** après tout ajout de code substantiel, vérifier
+qu'aucun label ne chevauche `wd-fname`/`wd-buf` en inspectant le
+fichier `.sym` généré par `uxnasm` (`python3 -c "..."` pour décoder les
+paires adresse/nom, voir le format binaire simple : short big-endian
+puis nom NUL-terminé) -- chercher spécifiquement si `wd-fname` apparaît
+à l'adresse EXACTE déclarée par `|1400 @wd-fname` (actuellement) et si
+un label de DONNÉES (`ini-*`, `wd-meta`) apparaît AVANT lui dans le
+fichier, à une adresse strictement inférieure. Repousser `|1400`/
+`|1500` avec une marge large (pas juste "assez") avant que ça ne
+redevienne un problème.
+
+### 14. Méthode : distinguer un vrai blocage d'un artefact de test AVANT de chasser un bug dans le code
+
+En diagnostiquant le piège #11 ci-dessus, la toute première piste
+explorée (mauvaise) était la corruption mémoire du piège #13 -- des
+heures de traçage plus tard, `strace -f -o trace.txt uxncli ...` a
+révélé que le "blocage" n'était parfois PAS un blocage réel : le
+programme lisait bien le SEUL octet stdin envoyé par le test
+(`read(0, "\21", 1024) = 1`, `\21` = octal = Ctrl+Q), le traitait
+correctement, puis se retrouvait légitimement à attendre une DEUXIÈME
+frappe que le script de test n'envoyait jamais (cas "aucun argv" :
+`on-argv` consomme le tout premier octet stdin comme signal de fin de
+boot, PAS comme une vraie frappe -- comportement préexistant,
+documenté dans le commentaire d'`on-argv` lui-même, pas un bug
+introduit ici). Confirmé en rejouant le MÊME test sur le dernier
+commit connu-bon (`git stash` puis reconstruction) : il "bloquait"
+IDENTIQUEMENT, prouvant que le code en cours n'y était pour rien.
+
+**Comment appliquer :** face à un blocage apparent, AVANT de chasser
+dans le nouveau code : (1) `strace -f -o trace.txt` le process bloqué,
+chercher le dernier `read()`/`write()` pour voir precisement ce qui
+est attendu ; (2) `git stash` et retester le DERNIER COMMIT connu-bon
+avec le MÊME script -- s'il bloque aussi, le bug (ou l'artefact) est
+dans le harnais de test ou l'environnement, pas dans les changements en
+cours ; (3) ne revenir au traçage `putc`/`wd-print-dec` dans le code
+QUE si (2) prouve que le commit precedent fonctionnait.
+
 ## Bug de logique réel (pas un piège de langage) : `min2`
 
 `move-up`/`move-down` utilisent `min2 ( a* b* -- min* )` pour clamper
