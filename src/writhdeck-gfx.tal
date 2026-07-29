@@ -1,0 +1,466 @@
+( writhdeck-gfx.tal -- entree GRAPHIQUE (device Screen+Controller,
+| pixels -- PAS le device Console pour l'affichage) du portage Uxntal
+| de WrithDeck. A lancer avec `uxnemu` (pas `uxncli`, qui n'a pas de
+| fenetre) -- voir ../README.md.
+|
+| Meme logique d'edition/tampon/word-wrap/marges/.ini/classification
+| de titres que l'entree console (writhdeck.tal) -- voir src/core.tal,
+| inclus en toute fin de ce fichier. Ce fichier-ci ne contient que ce
+| qui est propre a la sortie GRAPHIQUE : police bitmap (reprise telle
+| quelle de uxn/projects/examples/gui/terminal.tal, domaine public de
+| l'ecosysteme uxn de reference -- terminus01x02, 8x16 par glyphe,
+| ASCII imprimable 0x20-0x7d), dessin caractere/chaine/decimal via
+| Screen/sprite, dispatch Controller/button+key.
+|
+| DIFFERENCES CLAVIER PAR RAPPORT A LA CONSOLE (limitations du device
+| Controller de Varvara, pas de ce portage specifiquement) :
+| - Pas de touche Fin dediee (Controller n'a qu'un bit Origine/Home,
+|   pas de bit symetrique Fin) -- remappee sur Ctrl+E (convention
+|   Emacs), voir on-button.
+| - Ctrl+lettre s'identifie ICI par (Controller/button bit 0x01 ==
+|   Ctrl ENFONCE) ET (Controller/key == la lettre MINUSCULE en clair,
+|   PAS un code de controle 0x01-0x1a) -- verifie en lisant get_key()
+|   dans uxn/src/uxnemu.c : Ctrl+Q envoie key='q' (0x71), jamais 0x11.
+|   Un piege facile si on suppose (a tort) que Controller/key se
+|   comporte comme Console/read cote console -- voir CLAUDE.md.
+|
+| PAS DE VERIFICATION VISUELLE : cet environnement de developpement n'a
+| ni affichage SDL ni Xvfb pour piloter `uxnemu` en boite noire (voir
+| CLAUDE.md) -- ce fichier n'a ete verifie que par assemblage +
+| inspection de `.rom.sym` (adresses/chevauchements), jamais execute a
+| l'oeil. A tester manuellement avec `make run-gfx FILE=...`. )
+
+( meme layout System que writhdeck.tal (verifie dans uxn/src/devices/
+| system.c : wst/rst=0x04/0x05, metadata=0x06-07, state=0x0f), avec en
+| plus r/g/b NOMMES (0x08/0x0a/0x0c, confirmes dans
+| uxn/src/devices/screen.c:screen_palette -- la console les laisse en
+| padding anonyme puisqu'elle n'a pas de palette a configurer). )
+|04 @System/wst $1 &rst $1 &metadata $2 &r $2 &g $2 &b $2 &debug $1 &state $1
+|20 @Screen &vector $2 &width $2 &height $2 &auto $1 &pad $1 &x $2 &y $2 &addr $2 &pixel $1 &sprite $1
+|80 @Controller &vector $2 &button $1 &key $1
+
+%x8  ( n* -- px* ) { #30 SFT2 }   ( n*8 : colonne caractere -> pixel, glyphe large de 8px )
+%x16 ( n* -- px* ) { #40 SFT2 }   ( n*16 : rangee caractere -> pixel, glyphe haut de 16px )
+
+( zero-page PROPRE a cette entree (les variables partagees sont dans
+| core.tal, a |0030). )
+|0020
+@gfx-dcount     $1  ( gfx-draw-dec : nombre de chiffres empiles sur rst,
+                    | meme role que wd-dcount cote console )
+@gfx-row        $2  ( compteur de rangee ECRAN, phases marge haut/bas )
+@gfx-row2       $2  ( compteur de rangee ECRAN, phase texte )
+@gfx-lstart     $2  ( debut de ligne LOGIQUE de la rangee affichee, pour
+                    | classifier is-heading/is-heading-t2t sur la ligne
+                    | ENTIERE meme si la rangee courante n'est qu'un
+                    | segment enroule -- role de wd-tmp35 cote console )
+@gfx-rowend     $2  ( fin de la rangee visuelle en cours, wrap-row-end )
+@gfx-rowstart   $2  ( debut de cette meme rangee, fige AVANT char-loop
+                    | qui avance wd-tmp1 -- necessaire pour calculer le
+                    | remplissage (gfx-pad) APRES la boucle, une fois
+                    | wd-tmp1 rendu egal a gfx-rowend )
+@gfx-color      $1  ( couleur de la rangee de texte en cours : 1=normal,
+                    | 2=titre -- voir theme dans on-reset )
+@gfx-pad        $2  ( nombre de colonnes de remplissage restantes,
+                    | apres le contenu, pour completer la rangee a
+                    | wd-cols -- pas de "clear to end of line" cote
+                    | Screen, chaque rangee est donc TOUJOURS redessinee
+                    | sur toute sa largeur, contrairement a la console
+                    | qui s'appuie sur clear-eol du terminal hote. )
+
+|0100
+
+@on-reset ( -> )
+    ;gfx-meta .System/metadata DEO2
+    ( theme : 4 couleurs, un octet par canal (R/G/B), un nibble par
+    | couleur (0=fond, 1=texte normal, 2=titre, 3=curseur) -- meme
+    | idiome que uxn/projects/examples/gui/terminal.tal, valeurs
+    | choisies pour ce portage : fond noir, texte blanc, titre rouge,
+    | curseur jaune. )
+    #0fff .System/r DEO2
+    #0f0f .System/g DEO2
+    #0f00 .System/b DEO2
+    ( AUTO Y+ADDR : chaque Screen/sprite DEO avance l'adresse ET fait
+    | descendre y de 8px -- draw-char en ecrit deux (DEOk puis DEO) pour
+    | assembler les deux moities de 8 octets d'un glyphe 8x16, meme
+    | idiome que terminal.tal. )
+    #06 .Screen/auto DEO
+    #0000 .wd-arg-num STZ2
+    #00 .wd-fname-len STZ
+    ;on-argv .Console/vector DEO2
+BRK
+
+( Appelee par core-boot (core.tal) une fois le fichier/.ini charges.
+| Contrairement a la console, aucune ronde-trip async n'est necessaire
+| ici : Screen/width et Screen/height sont deja exacts et disponibles
+| immediatement (DEI2 synchrone), pas besoin d'une requete DSR ni d'une
+| machine a etats pour attendre une reponse. )
+@entry-finish-boot ( -- )
+    .Screen/width DEI2 x8-inv .wd-cols STZ2
+    .Screen/height DEI2 x16-inv .wd-rows STZ2
+    ;on-button .Controller/vector DEO2
+    gfx-render
+JMP2r
+
+( division par 8/16 (inverse de x8/x16 ci-dessus) -- SFT2 avec le
+| nibble de decalage a DROITE cette fois (decalage a gauche=0). )
+@x8-inv ( px* -- n* ) #03 SFT2 JMP2r
+@x16-inv ( px* -- n* ) #04 SFT2 JMP2r
+
+( --- boucle interactive ---
+| Controller/key est un PULSE auto-remis a zero par la VM des que ce
+| vecteur retourne (voir uxn/src/devices/controller.c:controller_key) :
+| chaque frappe de texte/controle declenche donc CE vecteur exactement
+| une fois avec key!=0, jamais deux fois de suite avec la meme valeur.
+| Controller/button, lui, est un ETAT qui reste tel quel tant que la
+| touche est physiquement maintenue -- verifier son bit "courant" a
+| chaque appel (plutot que de detecter un FRONT montant) est ce que
+| fait aussi l'editeur de reference "Left" (src/left.tal:on-button) :
+| ca prserve l'auto-repetition (SDL renvoie des SDL_KEYDOWN en rafale
+| tant qu'une touche est maintenue, chacun re-declenchant ce vecteur
+| avec le meme bit deja a 1) au prix d'un angle mort rarissime et sans
+| consequence (appuyer sur Ctrl PENDANT qu'une fleche est deja
+| maintenue peut redeclencher un mouvement pour cet appel-la). )
+@on-button ( -> )
+    .Controller/button DEI .wd-tmp1 STZ ( wd-tmp1 BAS OCTET = bouton --
+                                        | STZ, pas STZ2 : DEI ne pousse
+                                        | qu'un octet, STZ2 en depilerait
+                                        | deux et residuerait la pile
+                                        | (meme classe de piege que le
+                                        | #11 de CLAUDE.md). Reutilise ici
+                                        | comme simple scratch, avant que
+                                        | tout appel a un rendu ne le
+                                        | reclame pour autre chose. )
+    .Controller/key DEI
+
+    ( key==0 : aucune frappe de texte/controle cette fois-ci, seul
+    | l'etat des boutons (fleches/Home) nous interesse. )
+    DUP #00 EQU #00 EQU ?{ POP !&arrows }
+
+    DUP #0d EQU #00 EQU ?{ POP #0a insert-byte after-edit BRK }
+    DUP #0a EQU #00 EQU ?{ POP #0a insert-byte after-edit BRK }
+    DUP #08 EQU #00 EQU ?{ POP backspace after-edit BRK }
+
+    ( Ctrl+lettre : bit 0x01 du bouton ET la lettre en CLAIR (pas un
+    | code de controle) -- voir la note en tete de fichier. Si Ctrl
+    | N'EST PAS enfonce, on saute direct a l'insertion normale. )
+    .wd-tmp1 LDZ #01 AND #00 EQU #00 EQU ?{ !&plain }
+    DUP #71 EQU #00 EQU ?{ POP quit BRK }               ( Ctrl+Q )
+    DUP #73 EQU #00 EQU ?{ POP save-file gfx-render BRK } ( Ctrl+S )
+    DUP #65 EQU #00 EQU ?{ POP move-end after-move BRK }  ( Ctrl+E : Fin, voir note en tete )
+
+    &plain
+    DUP #20 LTH #00 EQU ?{ POP BRK }
+    DUP #7f EQU #00 EQU ?{ POP BRK }
+    insert-byte after-edit
+    BRK
+
+    &arrows
+    .wd-tmp1 LDZ #08 AND #00 NEQ #00 EQU ?{ move-home after-move BRK }
+    .wd-tmp1 LDZ #10 AND #00 NEQ #00 EQU ?{ move-up after-move BRK }
+    .wd-tmp1 LDZ #20 AND #00 NEQ #00 EQU ?{ move-down after-move BRK }
+    .wd-tmp1 LDZ #40 AND #00 NEQ #00 EQU ?{ move-left after-move BRK }
+    .wd-tmp1 LDZ #80 AND #00 NEQ #00 EQU ?{ move-right after-move BRK }
+BRK
+
+@after-edit ( -- )
+    #01 .wd-dirty STZ
+    clamp-scroll
+    gfx-render
+JMP2r
+
+@after-move ( -- )
+    clamp-scroll
+    gfx-render
+JMP2r
+
+@quit ( -- )
+    #80 .System/state DEO
+BRK
+
+( --- police + dessin de texte ---
+| Police terminus01x02 (8x16, ASCII imprimable 0x20 a 0x7d) : copiee
+| telle quelle depuis uxn/projects/examples/gui/terminal.tal --
+| domaine public de l'ecosysteme uxn de reference, deja utilisee comme
+| reference pour le bootstrap console de ce portage (kibi.tal) plus
+| tot dans ce projet. )
+@draw-char ( char color -- )
+    SWP
+    ( clampe tout octet hors [0x20,0x7d] a l'espace -- evite de lire
+    | au-dela de la table pour les octets de controle, DEL, ou les
+    | octets de tete/continuation UTF-8 (0x80-0xff) : cette police
+    | n'a pas de glyphe accentue, un caractere multi-octets s'affiche
+    | donc comme autant d'octets-espaces que d'octets qui le composent
+    | plutot que comme un seul caractere -- perte de fidelite visuelle
+    | reelle par rapport a la console (qui delegue tout le decodage
+    | UTF-8 au terminal hote), voir README. )
+    DUP #20 LTH #00 EQU ?{ POP #20 }
+    DUP #7d GTH #00 EQU ?{ POP #20 }
+    [ #20 SUB #00 SWP #40 SFT2 ;gfx-font ADD2 ] .Screen/addr DEO2
+    .Screen/sprite DEOk DEO
+    .Screen/y DEI2 #0010 SUB2 .Screen/y DEO2
+    .Screen/x DEI2 #0008 ADD2 .Screen/x DEO2
+JMP2r
+
+@draw-str ( str* color -- )
+    STH
+    &while
+        LDAk STHkr draw-char
+        INC2 LDAk #00 EQU #00 EQU ?{ !&done }
+        !&while
+    &done
+    POP2 POPr
+JMP2r
+
+( imprime n* espaces couleur color* -- remplissage de fin de rangee. )
+@draw-spaces ( n* color* -- )
+    STH
+    &loop
+        DUP2 #0000 EQU2 #00 EQU ?{ !&done }
+        #20 STHkr draw-char
+        #0001 SUB2
+        !&loop
+    &done
+    POP2 POPr
+JMP2r
+
+( dword* color* -- : dessine n en decimal, sans zeros de tete. Meme
+| algorithme que wd-print-dec cote console, juste draw-char au lieu de
+| putc. gfx-dcount = scratch prive. )
+@draw-dec ( n* color -- )
+    STH
+    DUP2 #0000 NEQ2 #00 EQU ?{
+        #00 .gfx-dcount STZ
+        &extract
+            DUP2 #0000 NEQ2 #00 EQU ?{
+                DUP2 #000a DIV2
+                DUP2 #000a MUL2
+                STH2 SWP2 STH2r SUB2
+                STH POP STHr
+                #30 ADD
+                STH
+                .gfx-dcount LDZ INC .gfx-dcount STZ
+                !&extract }
+        POP2
+        &print
+            .gfx-dcount LDZ #00 NEQ #00 EQU ?{
+                STHr STHkr draw-char
+                .gfx-dcount LDZ #01 SUB .gfx-dcount STZ
+                !&print }
+        POPr
+        JMP2r }
+    POP2 #30 STHr draw-char
+JMP2r
+
+( --- rendu --- une rangee vide (marges haut/bas) : wd-cols espaces en
+| couleur normale, a la rangee ECRAN donnee. )
+@gfx-blank-row ( row* -- )
+    #0000 x8 .Screen/x DEO2
+    x16 .Screen/y DEO2
+    .wd-cols LDZ2 #01 draw-spaces
+JMP2r
+
+( Meme decoupage en trois phases que wd-render cote console : marge du
+| haut (rangees vides), zone de texte (wd-usable-rows rangees, chacune
+| indentee de wd-eff-margin-cols colonnes, remplie a wd-cols de large),
+| marge du bas (rangees vides jusqu'a juste avant la barre de statut).
+| Puis le curseur est redessine PAR-DESSUS en couleur 3, en dernier --
+| plus simple que d'entrelacer la detection cellule-par-cellule dans
+| la boucle principale (voir gfx-draw-cursor). )
+@gfx-render ( -- )
+    compute-layout
+
+    #0000 .gfx-row STZ2
+    &top-margin-loop
+        .gfx-row LDZ2 .wd-text-top LDZ2 LTH2 #00 EQU ?{
+            .gfx-row LDZ2 gfx-blank-row
+            .gfx-row LDZ2 #0001 ADD2 .gfx-row STZ2
+            !&top-margin-loop }
+
+    .wd-scroll LDZ2 .wd-tmp1 STZ2
+    #0000 .gfx-row2 STZ2
+    &row-loop
+        .gfx-row2 LDZ2 .wd-usable-rows LDZ2 LTH2 #00 EQU ?{
+            .wd-tmp1 LDZ2 line-start .gfx-lstart STZ2
+            #01 .gfx-color STZ
+            .gfx-lstart LDZ2 is-heading
+            .gfx-lstart LDZ2 is-heading-t2t
+            ORA #00 NEQ #00 EQU ?{ #02 .gfx-color STZ }
+
+            .wd-tmp1 LDZ2 .wd-text-width LDZ2 wrap-row-end .gfx-rowend STZ2
+            .wd-tmp1 LDZ2 .gfx-rowstart STZ2
+
+            ( toute la rangee ECRAN est redessinee de bout en bout, marge
+            | gauche comprise (pas de "clear to end of line" cote
+            | Screen comme le fait la console via clear-eol -- si on
+            | sautait la marge gauche sans la dessiner, les pixels de la
+            | frame precedente y resteraient). )
+            #0000 x8 .Screen/x DEO2
+            .wd-text-top LDZ2 .gfx-row2 LDZ2 ADD2 x16 .Screen/y DEO2
+            .wd-eff-margin-cols LDZ2 .gfx-color LDZ draw-spaces
+
+            &char-loop
+                .wd-tmp1 LDZ2 .gfx-rowend LDZ2 LTH2 #00 EQU ?{
+                    .wd-tmp1 LDZ2 ;wd-buf ADD2 LDA .gfx-color LDZ draw-char
+                    .wd-tmp1 LDZ2 #0001 ADD2 .wd-tmp1 STZ2
+                    !&char-loop }
+
+            ( remplissage = (wd-cols - eff-margin-cols) - contenu ecrit
+            | (gfx-rowend - gfx-rowstart) -- couvre a la fois le reste de
+            | wd-text-width ET la marge droite, jusqu'au bord ECRAN. )
+            .wd-cols LDZ2 .wd-eff-margin-cols LDZ2 SUB2
+            .gfx-rowend LDZ2 .gfx-rowstart LDZ2 SUB2 SUB2 .gfx-pad STZ2
+            .gfx-pad LDZ2 .gfx-color LDZ draw-spaces
+
+            .gfx-rowend LDZ2 wrap-next-start .wd-tmp1 STZ2
+            .gfx-row2 LDZ2 #0001 ADD2 .gfx-row2 STZ2
+            !&row-loop }
+
+    .wd-text-top LDZ2 .wd-usable-rows LDZ2 ADD2 .gfx-row STZ2
+    &bottom-margin-loop
+        .gfx-row LDZ2 .wd-rows LDZ2 #0001 SUB2 LTH2 #00 EQU ?{
+            .gfx-row LDZ2 gfx-blank-row
+            .gfx-row LDZ2 #0001 ADD2 .gfx-row STZ2
+            !&bottom-margin-loop }
+
+    gfx-status-bar
+    gfx-draw-cursor
+JMP2r
+
+@gfx-status-bar ( -- )
+    #0000 x8 .Screen/x DEO2
+    .wd-rows LDZ2 #0001 SUB2 x16 .Screen/y DEO2
+    .wd-fname-len LDZ #00 NEQ #00 EQU ?{ ;wd-fname #01 draw-str }
+    .wd-fname-len LDZ #00 EQU #00 EQU ?{ ;draft-label #01 draw-str }
+    ;status-sep #01 draw-str
+    .wd-cursor LDZ2 line-start count-lines-from-zero #0001 ADD2 #01 draw-dec
+    ;status-comma #01 draw-str
+    .wd-cursor LDZ2 .wd-cursor LDZ2 line-start SUB2 #0001 ADD2 #01 draw-dec
+    .wd-dirty LDZ #00 NEQ #00 EQU ?{ ;status-dirty #01 draw-str }
+JMP2r
+
+( Redessine juste la cellule du curseur en couleur 3 (jaune), par-
+| dessus ce que gfx-render vient de tracer -- calcule sa rangee/colonne
+| ECRAN exactement comme wd-position-cursor cote console. )
+@gfx-draw-cursor ( -- )
+    .wd-cursor LDZ2 visual-row-start .wd-tmp1 STZ2
+    .wd-scroll LDZ2 .wd-tmp1 LDZ2 count-visual-rows .wd-tmp2 STZ2
+    .wd-cursor LDZ2 .wd-tmp1 LDZ2 SUB2 .wd-tmp3 STZ2
+
+    .wd-tmp3 LDZ2 .wd-eff-margin-cols LDZ2 ADD2 x8 .Screen/x DEO2
+    .wd-tmp2 LDZ2 .wd-text-top LDZ2 ADD2 x16 .Screen/y DEO2
+
+    .wd-cursor LDZ2 .wd-buflen LDZ2 LTH2 #00 EQU ?{ !&have-char }
+    #20 #03 draw-char JMP2r
+    &have-char
+    .wd-cursor LDZ2 ;wd-buf ADD2 LDA #03 draw-char
+JMP2r
+
+@draft-label "[draft] 00
+@status-sep 20 "-- 20 00
+@status-comma 2c 00
+@status-dirty 20 "[+] 00
+
+@gfx-meta [ $1
+    "writhdeck-uxn 0a
+    "graphique 20 "(experimental) 0a 00 ]
+
+( Police terminus01x02, 8x16 par glyphe, ASCII imprimable 0x20-0x7d --
+| copiee telle quelle depuis uxn/projects/examples/gui/terminal.tal
+| (ecosysteme uxn de reference, domaine public). )
+@gfx-font
+    0000 0000 0000 0000 0000 0000 0000 0000
+    0000 183c 3c3c 1818 1800 1818 0000 0000
+    0066 6666 2400 0000 0000 0000 0000 0000
+    0000 006c 6cfe 6c6c 6cfe 6c6c 0000 0000
+    1818 7cc6 c2c0 7c06 0686 c67c 1818 0000
+    0000 0000 c2c6 0c18 3060 c686 0000 0000
+    0000 386c 6c38 76dc cccc cc76 0000 0000
+    0030 3030 6000 0000 0000 0000 0000 0000
+    0000 0c18 3030 3030 3030 180c 0000 0000
+    0000 3018 0c0c 0c0c 0c0c 1830 0000 0000
+    0000 0000 0066 3cff 3c66 0000 0000 0000
+    0000 0000 0018 187e 1818 0000 0000 0000
+    0000 0000 0000 0000 0018 1818 3000 0000
+    0000 0000 0000 00fe 0000 0000 0000 0000
+    0000 0000 0000 0000 0000 1818 0000 0000
+    0000 0000 0206 0c18 3060 c080 0000 0000
+    0000 386c c6c6 d6d6 c6c6 6c38 0000 0000
+    0000 1838 7818 1818 1818 187e 0000 0000
+    0000 7cc6 060c 1830 60c0 c6fe 0000 0000
+    0000 7cc6 0606 3c06 0606 c67c 0000 0000
+    0000 0c1c 3c6c ccfe 0c0c 0c1e 0000 0000
+    0000 fec0 c0c0 fc06 0606 c67c 0000 0000
+    0000 3860 c0c0 fcc6 c6c6 c67c 0000 0000
+    0000 fec6 0606 0c18 3030 3030 0000 0000
+    0000 7cc6 c6c6 7cc6 c6c6 c67c 0000 0000
+    0000 7cc6 c6c6 7e06 0606 0c78 0000 0000
+    0000 0000 1818 0000 0018 1800 0000 0000
+    0000 0000 1818 0000 0018 1830 0000 0000
+    0000 0006 0c18 3060 3018 0c06 0000 0000
+    0000 0000 007e 0000 7e00 0000 0000 0000
+    0000 0060 3018 0c06 0c18 3060 0000 0000
+    0000 7cc6 c60c 1818 1800 1818 0000 0000
+    0000 007c c6c6 dede dedc c07c 0000 0000
+    0000 1038 6cc6 c6fe c6c6 c6c6 0000 0000
+    0000 fc66 6666 7c66 6666 66fc 0000 0000
+    0000 3c66 c2c0 c0c0 c0c2 663c 0000 0000
+    0000 f86c 6666 6666 6666 6cf8 0000 0000
+    0000 fe66 6268 7868 6062 66fe 0000 0000
+    0000 fe66 6268 7868 6060 60f0 0000 0000
+    0000 3c66 c2c0 c0de c6c6 663a 0000 0000
+    0000 c6c6 c6c6 fec6 c6c6 c6c6 0000 0000
+    0000 3c18 1818 1818 1818 183c 0000 0000
+    0000 1e0c 0c0c 0c0c cccc cc78 0000 0000
+    0000 e666 666c 7878 6c66 66e6 0000 0000
+    0000 f060 6060 6060 6062 66fe 0000 0000
+    0000 c6ee fefe d6c6 c6c6 c6c6 0000 0000
+    0000 c6e6 f6fe dece c6c6 c6c6 0000 0000
+    0000 7cc6 c6c6 c6c6 c6c6 c67c 0000 0000
+    0000 fc66 6666 7c60 6060 60f0 0000 0000
+    0000 7cc6 c6c6 c6c6 c6d6 de7c 0c0e 0000
+    0000 fc66 6666 7c6c 6666 66e6 0000 0000
+    0000 7cc6 c660 380c 06c6 c67c 0000 0000
+    0000 7e7e 5a18 1818 1818 183c 0000 0000
+    0000 c6c6 c6c6 c6c6 c6c6 c67c 0000 0000
+    0000 c6c6 c6c6 c6c6 c66c 3810 0000 0000
+    0000 c6c6 c6c6 d6d6 d6fe ee6c 0000 0000
+    0000 c6c6 6c7c 3838 7c6c c6c6 0000 0000
+    0000 6666 6666 3c18 1818 183c 0000 0000
+    0000 fec6 860c 1830 60c2 c6fe 0000 0000
+    0000 3c30 3030 3030 3030 303c 0000 0000
+    0000 0080 c0e0 7038 1c0e 0602 0000 0000
+    0000 3c0c 0c0c 0c0c 0c0c 0c3c 0000 0000
+    1038 6cc6 0000 0000 0000 0000 0000 0000
+    0000 0000 0000 0000 0000 0000 00ff 0000
+    3030 1800 0000 0000 0000 0000 0000 0000
+    0000 0000 0078 0c7c cccc cc76 0000 0000
+    0000 e060 6078 6c66 6666 667c 0000 0000
+    0000 0000 007c c6c0 c0c0 c67c 0000 0000
+    0000 1c0c 0c3c 6ccc cccc cc76 0000 0000
+    0000 0000 007c c6fe c0c0 c67c 0000 0000
+    0000 386c 6460 f060 6060 60f0 0000 0000
+    0000 0000 0076 cccc cccc cc7c 0ccc 7800
+    0000 e060 606c 7666 6666 66e6 0000 0000
+    0000 1818 0038 1818 1818 183c 0000 0000
+    0000 0606 000e 0606 0606 0606 6666 3c00
+    0000 e060 6066 6c78 786c 66e6 0000 0000
+    0000 3818 1818 1818 1818 183c 0000 0000
+    0000 0000 00ec fed6 d6d6 d6c6 0000 0000
+    0000 0000 00dc 6666 6666 6666 0000 0000
+    0000 0000 007c c6c6 c6c6 c67c 0000 0000
+    0000 0000 00dc 6666 6666 667c 6060 f000
+    0000 0000 0076 cccc cccc cc7c 0c0c 1e00
+    0000 0000 00dc 7666 6060 60f0 0000 0000
+    0000 0000 007c c660 380c c67c 0000 0000
+    0000 1030 30fc 3030 3030 361c 0000 0000
+    0000 0000 00cc cccc cccc cc76 0000 0000
+    0000 0000 0066 6666 6666 3c18 0000 0000
+    0000 0000 00c6 c6d6 d6d6 fe6c 0000 0000
+    0000 0000 00c6 6c38 3838 6cc6 0000 0000
+    0000 0000 00c6 c6c6 c6c6 c67e 060c f800
+    0000 0000 00fe cc18 3060 c6fe 0000 0000
+    0000 0e18 1818 7018 1818 180e 0000 0000
+    0000 1818 1818 0018 1818 1818 0000 0000
+    0000 7018 1818 0e18 1818 1870 0000 0000
+
+~src/core.tal

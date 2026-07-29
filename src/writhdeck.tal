@@ -1,170 +1,70 @@
-( writhdeck.tal -- amorcage d'un portage Uxntal de WrithDeck, en MODE
-| CONSOLE (device Console, sequences ANSI/VT100 -- PAS le device
-| Screen). Voir ../README.md pour le perimetre exact et les
-| simplifications assumees pour cet amorcage : curseur en decalage
-| OCTET dans le tampon (pas de decodage UTF-8 pour la logique de
-| curseur -- le contenu lui-meme reste un passthrough octet-a-octet
-| fidele, donc les accents s'affichent/se sauvegardent correctement),
-| pas de word-wrap (troncature a la largeur du terminal), pas de
-| detection dynamique de la taille du terminal (24x80 fixe), pas de
-| tests automatises.
+( writhdeck.tal -- entree CONSOLE (device Console, sequences ANSI/
+| VT100 -- PAS le device Screen) du portage Uxntal de WrithDeck. Voir
+| ../README.md pour le perimetre exact et les simplifications
+| assumees : curseur en decalage OCTET dans le tampon (pas de decodage
+| UTF-8 pour la logique de curseur -- le contenu lui-meme reste un
+| passthrough octet-a-octet fidele, donc les accents s'affichent/se
+| sauvegardent correctement), pas de tests automatises au-dela de
+| tests/ (pty). Taille du terminal detectee dynamiquement au boot
+| (DSR, voir send-size-query/on-sizereply) ; word-wrap greedy aux
+| limites de marge (voir wrap-row-end/visual-row-start dans core.tal).
+|
+| La logique d'edition/tampon/word-wrap/marges/.ini/classification de
+| titres est PARTAGEE avec l'entree graphique (writhdeck-gfx.tal) --
+| voir src/core.tal, inclus en toute fin de ce fichier. Ce fichier-ci
+| ne contient que ce qui est propre a la sortie CONSOLE : sequences
+| ANSI, machine a etats DSR/fleches, dispatch clavier Console/read.
 |
 | Polarite de "?{ }" (verifiee empiriquement avec un mini-programme
 | autonome, PAS documentee de memoire) : le bloc s'execute quand
 | l'octet depile est EXACTEMENT 0, il est SAUTE si l'octet est non nul.
-| REGLE MECANIQUE appliquee PARTOUT dans ce fichier, sans exception,
-| pour eviter les erreurs de polarite (une premiere version de ce
-| fichier en avait plusieurs, silencieuses -- pas d'"optimisation"
-| tant que la nouvelle version n'a pas tourne) : pour "si CONDITION
+| REGLE MECANIQUE appliquee PARTOUT (ici et dans core.tal), sans
+| exception, pour eviter les erreurs de polarite : pour "si CONDITION
 | alors BLOC", toujours calculer le flag NATUREL de CONDITION avec
 | l'opcode qui correspond mot-a-mot (EQU pour "==", NEQ pour "!=", LTH
 | pour "<", GTH pour ">"), PUIS TOUJOURS ajouter "#00 EQU" avant "?{ }". )
 
 ( pas de champ &vector ici -- System n'en a pas (contrairement a
-| Console/File), contrairement a ce qu'une premiere version de ce
-| fichier supposait par erreur (decalant &state a 0x0d au lieu de
-| 0x0f, l'adresse REELLEMENT verifiee par uxncli.c pour detecter l'arret
-| -- ecrire a 0x0d ne faisait donc rien, bug reel rencontre en testant :
-| Ctrl+Q affichait la sequence de sortie ANSI mais ne quittait jamais).
-| Layout verifie dans uxn/src/devices/system.c (wst/rst=0x04/0x05,
-| metadata=0x06-07, state=0x0f), identique a celui de kibi.tal. )
+| Console/File), verifie dans uxn/src/devices/system.c (wst/rst=
+| 0x04/0x05, metadata=0x06-07, state=0x0f), identique a kibi.tal. )
 |04 @System/wst $1 &rst $1 &metadata $2 [ $6 ] &debug $1 &state $1
-|10 @Console &vector $2 &read $1 &pad $4 &type $1 &write $1 &error $1
-|a0 @File &vector $2 &success $2 &stat $2 &delete $1 &append $1 &name $2 &length $2 &read $2 &write $2
 
 %putc { .Console/write DEO }
 %csi { #1b .Console/write DEO #5b .Console/write DEO }
 %semicolon { #3b .Console/write DEO }
 
-( zero-page : scalaires du programme, places apres Console (0x10) et
-| AVANT File (0xa0) -- on n'utilise pas Screen/Controller/Mouse/
-| Datetime, cette plage est donc libre. )
+( zero-page PROPRE a cette entree (les variables partagees sont dans
+| core.tal, a |0030) -- budget volontairement large (|0020-|002f). )
 |0020
-@wd-rows        $2  ( hauteur terminal, fixe a cet amorcage )
-@wd-cols        $2  ( largeur terminal, fixe a cet amorcage )
-@wd-cursor      $2  ( decalage OCTET du curseur dans wd-buf )
-@wd-buflen      $2  ( octets utilises dans wd-buf )
-@wd-scroll      $2  ( decalage OCTET du debut de la premiere ligne visible )
 @wd-esc-state   $1  ( 0=idle 1=vu ESC 2=vu ESC[ )
-@wd-dirty       $1
-@wd-fname-len   $1
-@wd-arg-num     $1  ( index du prochain argument argv, voir on-argv )
 @wd-dcount      $1  ( wd-print-dec : nombre de chiffres empiles sur rst )
-@wd-tmp1        $2
-@wd-tmp2        $2
-@wd-tmp3        $2
-@wd-tmp4        $2
-@wd-tmp5        $2
-@wd-tmp6        $2  ( scratch prive de count-lines -- NE JAMAIS l'utiliser
-                    | ailleurs : plusieurs appelants (clamp-scroll,
-                    | wd-position-cursor) gardent wd-tmp1..5 vivants a
-                    | travers l'appel a count-lines, ce que wd-tmp6 seul
-                    | garantit de ne jamais ecraser (bug reel rencontre
-                    | en testant : count-lines utilisait wd-tmp1, ecrasant
-                    | silencieusement la valeur que clamp-scroll y avait
-                    | rangee, provoquant une boucle qui ne se terminait
-                    | jamais). )
-@wd-tmp7        $2  ( scratch prive de is-heading -- meme discipline que
-                    | wd-tmp6 : is-heading est appelee depuis le
-                    | row-loop de wd-render pendant que wd-tmp1 contient
-                    | encore le debut de la ligne a passer ensuite a
-                    | render-row -- un scratch partage l'ecraserait. )
-@wd-tmp8        $1  ( scratch prive de is-heading : compteur de '#' )
-@wd-tmp9        $2  ( scratch prive de is-heading-t2t : position "q", le
-                    | debut du contenu APRES le marqueur d'ouverture --
-                    | doit survivre jusqu'a la toute fin de la routine,
-                    | contrairement a wd-tmp10 reutilise en curseur
-                    | mobile a chaque phase. )
-@wd-tmp10       $2  ( scratch prive de is-heading-t2t : curseur mobile,
-                    | reutilise successivement pour p, pour l'avance
-                    | apres le marqueur d'ouverture, pour le retrait des
-                    | espaces de fin -- fixe a la position du marqueur
-                    | de fermeture des que trouvee. )
-@wd-tmp11       $2  ( scratch prive de is-heading-t2t : curseur du
-                    | dernier balayage, verifie qu'il reste du contenu
-                    | non-blanc entre wd-tmp9 et wd-tmp10. )
+@wd-tmp34       $2  ( partage wd-render/render-row (rendu console) : fin
+                    | de la rangee affichee -- wd-render la calcule
+                    | (wrap-row-end), render-row la lit comme borne
+                    | d'impression. Propre a CETTE entree : le rendu
+                    | graphique a sa propre logique de bornage de rangee. )
+@wd-tmp35       $2  ( wd-render (rendu console) : debut de ligne LOGIQUE
+                    | de la rangee affichee, pour classifier
+                    | is-heading/is-heading-t2t sur la ligne ENTIERE
+                    | meme si la rangee courante est un segment enroule
+                    | autre que le premier. )
 
-( --- marges (.ini) --- valeurs BRUTES lues depuis writhd.ini (ou les
-| defauts 6/4 si absent/illisible) ; ne JAMAIS les modifier ailleurs
-| que load-config -- compute-layout calcule les valeurs EFFECTIVES
-| (eff-*) a chaque rendu a partir de celles-ci, sans jamais les
-| ecraser, exactement comme g_cfg_margin_cols/rows cote writhdeck-asm
-| restent la config chargee une fois pour toutes pendant que
-| draw_editor recalcule des variables locales a chaque frame. )
-@wd-margin-cols     $2
-@wd-margin-rows     $2
-( --- marges effectives, recalculees a CHAQUE appel de compute-layout
-| (repli a 0 si l'ecran est trop petit pour les contenir, meme garde-
-| fou que draw_editor cote writhdeck-asm) --  JAMAIS modifiees
-| ailleurs que par compute-layout. )
-@wd-eff-margin-cols $2
-@wd-eff-margin-rows $2
-@wd-text-width      $2  ( wd-cols - 2*eff-margin-cols, repli a wd-cols )
-@wd-text-top        $2  ( = eff-margin-rows : rangee ECRAN 0-based de la
-                        | premiere rangee de texte )
-@wd-usable-rows      $2  ( nombre de rangees de texte disponibles )
-
-@wd-in-editor-section $1  ( etat du parseur .ini : 1 pendant qu'on lit
-                          | les lignes de la section [editor], 0 sinon )
-@wd-tmp12       $2  ( scratch prive de load-config : nb d'octets lus
-                    | du fichier .ini )
-@wd-tmp13       $2  ( scratch prive de load-config : curseur de la
-                    | boucle ligne-par-ligne )
-@wd-tmp14       $2  ( scratch prive de buf-has-prefix (curseur tampon)
-                    | et de parse-ini-value (curseur de balayage) --
-                    | jamais actifs en meme temps, reutilisation sure )
-@wd-tmp15       $2  ( scratch prive de buf-has-prefix : curseur du
-                    | litteral compare )
-@wd-tmp16       $2  ( scratch prive de parse-ini-line : fin de la
-                    | ligne courante, calculee une fois et reutilisee
-                    | comme borne pour parse-ini-value )
-@wd-tmp17       $2  ( scratch prive de parse-ini-value : borne de fin
-                    | passee par l'appelant )
-@wd-tmp18       $2  ( scratch prive de parse-ini-value : accumulateur
-                    | de la valeur decimale en cours de lecture )
-@wd-tmp19       $2  ( scratch prive de compute-layout : candidat
-                    | text_bottom avant clampage )
-@wd-tmp20       $2  ( scratch prive de print-spaces : compteur )
-
-( --- scratch word-wrap : chaque routine ci-dessous a son propre bloc,
-| jamais partage avec une autre -- meme discipline que wd-tmp6/7/8/
-| 9-11 plus haut, cruciale ici parce que plusieurs de ces routines
-| s'appellent les unes les autres (wrap-row-end/wrap-next-start sont
-| appelees DEPUIS visual-row-start/count-visual-rows/visual-row-before/
-| move-up/move-down/wd-render/clamp-scroll), donc un scratch partage se
-| ferait ecraser en plein calcul. )
-@wd-tmp21       $2  ( wrap-next-start : borne line_end )
-@wd-tmp22       $2  ( wrap-row-end : width )
-@wd-tmp23       $2  ( wrap-row-end : line_end )
-@wd-tmp24       $2  ( wrap-row-end : candidat pos+width )
-@wd-tmp25       $2  ( wrap-row-end : pos )
-@wd-tmp26       $2  ( wrap-row-end : curseur de recherche arriere )
-@wd-tmp27       $2  ( count-visual-rows : to )
-@wd-tmp28       $2  ( count-visual-rows : curseur de balayage )
-@wd-tmp29       $2  ( count-visual-rows : accumulateur )
-@wd-tmp30       $2  ( count-visual-rows : fin de rangee temporaire )
-@wd-tmp31       $2  ( visual-row-start : cursor sauvegarde )
-@wd-tmp32       $2  ( visual-row-start : debut de rangee en cours de balayage )
-@wd-tmp33       $2  ( visual-row-start : fin de la rangee en cours )
-@wd-tmp34       $2  ( partage wd-render/render-row : fin de la rangee
-                    | affichee -- wd-render la calcule (wrap-row-end),
-                    | render-row la lit comme borne d'impression )
-@wd-tmp35       $2  ( wd-render : debut de ligne LOGIQUE de la rangee
-                    | affichee, pour classifier is-heading/is-heading-t2t
-                    | sur la ligne ENTIERE meme si la rangee courante
-                    | est un segment enroule autre que le premier )
-@wd-tmp40       $2  ( visual-row-before : row-start cible sauvegarde )
-@wd-tmp41       $2  ( visual-row-before : debut de la ligne logique cible )
-@wd-tmp42       $2  ( visual-row-before : "rangee precedente" retenue
-                    | pendant le balayage dans la meme ligne )
-@wd-tmp43       $2  ( visual-row-before : "rangee suivante" temporaire
-                    | pendant ce meme balayage )
-@wd-tmp44       $2  ( visual-row-before : debut de la ligne logique precedente )
-@wd-tmp45       $2  ( visual-row-before : fin de la ligne logique precedente )
-@wd-tmp46       $2  ( visual-row-before : "derniere rangee connue" pendant
-                    | le balayage de la ligne precedente )
-@wd-tmp47       $2  ( visual-row-before : fin de rangee temporaire pendant
-                    | ce meme balayage )
+( --- detection dynamique de la taille du terminal, au boot (voir
+| on-sizereply) : machine a etats qui lit la reponse DSR
+| "ESC[row;colR" a la requete ESC[999C ESC[999B ESC[6n envoyee par
+| send-size-query, idiome repris de kibi.tal (apps/kibi dans
+| l'ecosysteme uxn de reference). 0=attend ESC, 1=attend '[',
+| 2=accumule la rangee jusqu'a ';', 3=accumule la colonne jusqu'a 'R'. )
+@wd-sz-state    $1
+@wd-sz-row      $2  ( accumulateur decimal de la rangee )
+@wd-sz-col      $2  ( accumulateur decimal de la colonne )
+@wd-sz-digit    $1  ( scratch : chiffre courant (0-9) le temps de
+                    | pousser l'accumulateur*10 AVANT de le relire --
+                    | on-sizereply ne peut pas reread depuis un tampon
+                    | comme parse-ini-value (les octets arrivent un par
+                    | un via Console/read, jamais stockes), donc ce
+                    | scratch joue le meme role que la relecture memoire
+                    | ailleurs dans ce fichier. )
 
 |0100
 
@@ -176,69 +76,71 @@
     ;on-argv .Console/vector DEO2
 BRK
 
-( --- phase 1 : capture du premier argument (chemin de fichier) ---
-| Console/type : STD=1 (frappe normale -- signifie ICI qu'aucun
-| argument n'a ete passe DU TOUT, le premier octet recu est deja une
-| vraie frappe), ARG=2 (octet d'un argument), EOA=3 (fin d'un
-| argument, il en reste), END=4 (fin du dernier argument). Seul le
-| PREMIER argument est capture (assez pour "chemin optionnel", comme
-| writhdeck-asm) ; les octets d'arguments suivants sont lus (il le
-| faut, l'hote les envoie de toute facon) mais ignores. )
-@on-argv ( -> )
-    .Console/type DEI
-    DUP #02 EQU #00 EQU ?{
-        ( type == ARG : accumule seulement si on est encore dans le 1er argument )
-        POP
-        .wd-arg-num LDZ2 #0000 NEQ2 #00 EQU ?{ BRK }
-        .Console/read DEI
-        ;wd-fname #00 .wd-fname-len LDZ ADD2 STA
-        .wd-fname-len LDZ INC .wd-fname-len STZ
-        BRK }
-    DUP #03 EQU #00 EQU ?{ POP .wd-arg-num LDZ2 INC2 .wd-arg-num STZ2 BRK }
-    ( sinon : END(4) ou STD(1, aucun argument passe) -> fin de la
-    | capture, on demarre l'editeur )
-    POP
-    #00 ;wd-fname #00 .wd-fname-len LDZ ADD2 STA   ( NUL-terminer le nom de fichier )
-    finish-boot
-BRK
-
-@finish-boot ( -- )
+( Appelee par core-boot (core.tal) une fois le fichier/.ini charges.
+| Defauts de repli 24/80, ecrases par on-sizereply une fois la reponse
+| DSR recue -- conserves tels quels si un champ de la reponse parse a
+| 0 (rangee/colonne vide dans "ESC[row;colR", grammaire VT100 valide
+| mais degeneree). Bloque jusqu'a la reponse du terminal (meme
+| comportement que kibi.tal) : necessite un vrai terminal ANSI/VT100
+| (le wrapper `writhdeck` met deja le tty en mode raw), un harnais de
+| test pty doit injecter "ESC[row;colR" sinon le boot n'avance jamais
+| (voir tests/pty_harness.py). )
+@entry-finish-boot ( -- )
     #0018 .wd-rows STZ2
     #0050 .wd-cols STZ2
-    ( load-config lit writhd.ini DANS wd-buf, reutilise comme tampon
-    | scratch -- DOIT tourner AVANT load-file (qui l'ecrasera avec le
-    | vrai contenu) ET .wd-buflen DOIT etre explicitement remise a 0
-    | dans le cas "brouillon vide" juste en dessous, puisque load-config
-    | l'a laissee a la taille du fichier .ini, pas a 0 -- avant cet
-    | ajout, ce cas s'appuyait implicitement sur le fait que la RAM uxn
-    | demarre a zero (jamais ecrite depuis), ce qui n'est plus vrai une
-    | fois load-config passee par la. )
-    load-config
-    .wd-fname-len LDZ #00 NEQ #00 EQU ?{ load-file }
-    .wd-fname-len LDZ #00 EQU #00 EQU ?{ #0000 .wd-buflen STZ2 }
-    #0000 .wd-cursor STZ2
-    #0000 .wd-scroll STZ2
-    #00 .wd-dirty STZ
-    ;on-keypress .Console/vector DEO2
-    wd-render
+    hide-cursor
+    #00 .wd-sz-state STZ
+    send-size-query
+    ;on-sizereply .Console/vector DEO2
 JMP2r
 
-( --- chargement/sauvegarde fichier --- )
-@load-file ( -- )
-    ;wd-fname .File/name DEO2
-    #ef00 .File/length DEO2
-    ;wd-buf .File/read DEO2
-    .File/success DEI2 .wd-buflen STZ2
+( ESC[999C ESC[999B : pousse le curseur reel au coin bas-droit (au-dela
+| de toute taille de terminal plausible, il se clampe au bord) ; ESC[6n
+| (Device Status Report) : demande sa position, le terminal repond par
+| "ESC[row;colR" sur stdin -- lue octet par octet par on-sizereply,
+| memes sequences que kibi.tal/apps/kibi. )
+@send-size-query ( -- )
+    csi #39 putc #39 putc #39 putc #43 putc
+    csi #39 putc #39 putc #39 putc #42 putc
+    csi #36 putc #6e putc
 JMP2r
 
-@save-file ( -- )
-    .wd-fname-len LDZ #00 NEQ #00 EQU ?{
-        ;wd-fname .File/name DEO2
-        .wd-buflen LDZ2 .File/length DEO2
-        ;wd-buf .File/write DEO2
-        #00 .wd-dirty STZ
-    }
-JMP2r
+( machine a etats pour "ESC[row;colR" -- voir wd-sz-state plus haut.
+| Une fois 'R' vu, applique les valeurs parsees (repli sur le defaut
+| deja en place si un champ est vide/degenere), puis seulement
+| maintenant bascule vers l'editeur reel (on-keypress + premier rendu). )
+@on-sizereply ( -> )
+    .Console/read DEI
+    .wd-sz-state LDZ #00 EQU #00 EQU ?{
+        DUP #1b EQU #00 EQU ?{ POP #01 .wd-sz-state STZ BRK }
+        POP BRK }
+    .wd-sz-state LDZ #01 EQU #00 EQU ?{
+        DUP #5b EQU #00 EQU ?{
+            POP #02 .wd-sz-state STZ #0000 .wd-sz-row STZ2 BRK }
+        POP #00 .wd-sz-state STZ BRK }
+    .wd-sz-state LDZ #02 EQU #00 EQU ?{
+        DUP #3b EQU #00 EQU ?{
+            POP #03 .wd-sz-state STZ #0000 .wd-sz-col STZ2 BRK }
+        DUP #30 SUB #09 GTH #00 EQU ?{ POP #00 .wd-sz-state STZ BRK }
+        #30 SUB .wd-sz-digit STZ
+        .wd-sz-row LDZ2 #000a MUL2
+        .wd-sz-digit LDZ #00 SWP
+        ADD2 .wd-sz-row STZ2
+        BRK }
+    ( etat 3 : accumule la colonne jusqu'a 'R' -- seul etat restant )
+    DUP #52 EQU #00 EQU ?{
+        POP
+        .wd-sz-row LDZ2 #0000 NEQ2 #00 EQU ?{ .wd-sz-row LDZ2 .wd-rows STZ2 }
+        .wd-sz-col LDZ2 #0000 NEQ2 #00 EQU ?{ .wd-sz-col LDZ2 .wd-cols STZ2 }
+        ;on-keypress .Console/vector DEO2
+        wd-render
+        BRK }
+    DUP #30 SUB #09 GTH #00 EQU ?{ POP #00 .wd-sz-state STZ BRK }
+    #30 SUB .wd-sz-digit STZ
+    .wd-sz-col LDZ2 #000a MUL2
+    .wd-sz-digit LDZ #00 SWP
+    ADD2 .wd-sz-col STZ2
+BRK
 
 ( --- boucle interactive --- )
 @on-keypress ( -> )
@@ -285,619 +187,11 @@ JMP2r
     #80 .System/state DEO
 BRK
 
-( --- edition : deplacement du tampon plat --- )
-@shift-right ( -- )
-    ( ouvre un trou d'un octet en .wd-cursor, en decalant [cursor,buflen)
-    | vers le haut d'un cran, EN PARTANT DE LA FIN (sinon on ecrase les
-    | octets pas encore copies). )
-    .wd-buflen LDZ2 .wd-tmp1 STZ2
-    &loop
-        .wd-tmp1 LDZ2 .wd-cursor LDZ2 GTH2 #00 EQU ?{
-            ;wd-buf .wd-tmp1 LDZ2 ADD2 .wd-tmp2 STZ2
-            ;wd-buf .wd-tmp1 LDZ2 #0001 SUB2 ADD2 LDA
-            .wd-tmp2 LDZ2 STA
-            .wd-tmp1 LDZ2 #0001 SUB2 .wd-tmp1 STZ2
-            !&loop }
-JMP2r
-
-@shift-left ( -- )
-    ( retire wd-buf[cursor-1] en decalant [cursor,buflen) vers le bas
-    | d'un cran, en partant du DEBUT (sens sur ici, pas de recouvrement). )
-    .wd-cursor LDZ2 .wd-tmp1 STZ2
-    &loop
-        .wd-tmp1 LDZ2 .wd-buflen LDZ2 LTH2 #00 EQU ?{
-            ;wd-buf .wd-tmp1 LDZ2 #0001 SUB2 ADD2 .wd-tmp2 STZ2
-            ;wd-buf .wd-tmp1 LDZ2 ADD2 LDA
-            .wd-tmp2 LDZ2 STA
-            .wd-tmp1 LDZ2 #0001 ADD2 .wd-tmp1 STZ2
-            !&loop }
-JMP2r
-
-@insert-byte ( byte -- )
-    STH
-    shift-right
-    STHr
-    .wd-cursor LDZ2 ;wd-buf ADD2 STA
-    .wd-cursor LDZ2 #0001 ADD2 .wd-cursor STZ2
-    .wd-buflen LDZ2 #0001 ADD2 .wd-buflen STZ2
-JMP2r
-
-@backspace ( -- )
-    .wd-cursor LDZ2 #0000 NEQ2 #00 EQU ?{
-        shift-left
-        .wd-buflen LDZ2 #0001 SUB2 .wd-buflen STZ2
-        .wd-cursor LDZ2 #0001 SUB2 .wd-cursor STZ2 }
-JMP2r
-
-( --- deplacement --- )
-@move-left ( -- )
-    .wd-cursor LDZ2 #0000 NEQ2 #00 EQU ?{
-        .wd-cursor LDZ2 #0001 SUB2 .wd-cursor STZ2 }
-JMP2r
-
-@move-right ( -- )
-    .wd-cursor LDZ2 .wd-buflen LDZ2 LTH2 #00 EQU ?{
-        .wd-cursor LDZ2 #0001 ADD2 .wd-cursor STZ2 }
-JMP2r
-
-@move-home ( -- )
-    .wd-cursor LDZ2 line-start .wd-cursor STZ2
-JMP2r
-
-@move-end ( -- )
-    .wd-cursor LDZ2 line-end .wd-cursor STZ2
-JMP2r
-
-( Haut/Bas se deplacent par RANGEE VISUELLE (segment enroule), pas par
-| ligne logique -- meme "colonne collante" via min2 qu'avant l'ajout
-| du word-wrap, juste appliquee a la rangee visuelle precedente/
-| suivante au lieu de la ligne logique precedente/suivante. Suppose
-| .wd-text-width deja a jour (compute-layout tourne a chaque
-| wd-render, et wd-render a toujours tourne au moins une fois --
-| depuis finish-boot -- avant que la moindre touche flechee soit
-| lue). )
-@move-up ( -- )
-    .wd-cursor LDZ2 visual-row-start .wd-tmp1 STZ2
-    .wd-tmp1 LDZ2 visual-row-before .wd-tmp2 STZ2
-    .wd-tmp1 LDZ2 .wd-tmp2 LDZ2 EQU2 #00 EQU ?{ JMP2r }
-    .wd-cursor LDZ2 .wd-tmp1 LDZ2 SUB2 .wd-tmp3 STZ2
-    .wd-tmp2 LDZ2 .wd-text-width LDZ2 wrap-row-end .wd-tmp4 STZ2
-    .wd-tmp2 LDZ2 .wd-tmp3 LDZ2 ADD2 .wd-tmp4 LDZ2 min2 .wd-cursor STZ2
-JMP2r
-
-@move-down ( -- )
-    .wd-cursor LDZ2 visual-row-start .wd-tmp1 STZ2
-    .wd-tmp1 LDZ2 .wd-text-width LDZ2 wrap-row-end .wd-tmp5 STZ2
-    .wd-tmp5 LDZ2 .wd-buflen LDZ2 LTH2 #00 EQU ?{
-        .wd-cursor LDZ2 .wd-tmp1 LDZ2 SUB2 .wd-tmp2 STZ2
-        .wd-tmp5 LDZ2 wrap-next-start .wd-tmp3 STZ2
-        .wd-tmp3 LDZ2 .wd-text-width LDZ2 wrap-row-end .wd-tmp4 STZ2
-        .wd-tmp3 LDZ2 .wd-tmp2 LDZ2 ADD2 .wd-tmp4 LDZ2 min2 .wd-cursor STZ2 }
-JMP2r
-
-( --- utilitaires sur lignes --- )
-@line-start ( pos* -- start* )
-    &loop
-        DUP2 #0000 NEQ2 #00 EQU ?{
-            DUP2 #0001 SUB2 ;wd-buf ADD2 LDA #0a NEQ #00 EQU ?{
-                #0001 SUB2 !&loop } }
-JMP2r
-
-@line-end ( pos* -- end* )
-    &loop
-        DUP2 .wd-buflen LDZ2 LTH2 #00 EQU ?{
-            DUP2 ;wd-buf ADD2 LDA #0a NEQ #00 EQU ?{
-                #0001 ADD2 !&loop } }
-JMP2r
-
-( --- word-wrap : rangees VISUELLES a l'interieur d'une ligne LOGIQUE ---
-| Portage de editor_wrap (writhdeck-c/src/editor.c:250) : word-wrap
-| glouton, coupe au dernier espace AVANT la largeur si possible, sinon
-| coupe brutalement au milieu du mot (jamais de cesure). Contrairement
-| au C, aucun tableau de rangees n'est precalcule (pas d'allocateur ici,
-| voir wd-buf) -- tout est recalcule a la volee par balayage, meme
-| philosophie "recalcul complet, pas de cache" que line-start/line-end/
-| count-lines. Les octets, pas les caracteres UTF-8 decodes : meme
-| simplification que le reste du curseur dans ce portage (voir README,
-| "cursor is a byte offset"). )
-
-( ( pos* width* -- end* ) : fin (exclue) de la rangee visuelle qui
-| commence a pos, sans jamais depasser width octets ni la fin de la
-| ligne LOGIQUE contenant pos. Si le reste de la ligne tient dans
-| width, la rangee va jusqu'a la fin de ligne. Sinon, cherche le
-| DERNIER espace strictement entre pos et pos+width-1 pour couper
-| avant lui (l'espace lui-meme exclu) ; si aucun espace, coupe pile a
-| pos+width (milieu de mot). wd-tmp22..26 = scratch prive. )
-@wrap-row-end ( pos* width* -- end* )
-    .wd-tmp22 STZ2
-    .wd-tmp25 STZ2
-
-    .wd-tmp25 LDZ2 line-end .wd-tmp23 STZ2
-
-    ( reste(=line_end-pos) <= width : toute la fin de ligne tient --
-    | fin = line_end. GTH2 brut SANS inversion : le bloc doit
-    | s'executer sur le FAUX de "reste>width" (donc <=) -- meme
-    | exception documentee que le test "est un chiffre" de
-    | parse-ini-value (voir CLAUDE.md). )
-    .wd-tmp23 LDZ2 .wd-tmp25 LDZ2 SUB2 .wd-tmp22 LDZ2 GTH2 ?{
-        .wd-tmp23 LDZ2 JMP2r }
-
-    ( ne tient pas : candidat = pos + width )
-    .wd-tmp25 LDZ2 .wd-tmp22 LDZ2 ADD2 .wd-tmp24 STZ2
-
-    ( recherche en arriere depuis (candidat-1) jusqu'a pos EXCLU, pour
-    | le dernier espace -- meme borne que la boucle C "p > start". )
-    .wd-tmp24 LDZ2 #0001 SUB2 .wd-tmp26 STZ2
-    &search
-        .wd-tmp26 LDZ2 .wd-tmp25 LDZ2 GTH2 #00 EQU ?{
-            ;wd-buf .wd-tmp26 LDZ2 ADD2 LDA #20 EQU #00 EQU ?{ !&found }
-            .wd-tmp26 LDZ2 #0001 SUB2 .wd-tmp26 STZ2
-            !&search }
-    .wd-tmp24 LDZ2 JMP2r
-    &found
-    .wd-tmp26 LDZ2
-JMP2r
-
-( ( end* -- next* ) : debut de la PROCHAINE rangee visuelle apres une
-| rangee qui s'est terminee a end -- saute toute la sequence d'espaces
-| qui suit (bornee a la ligne logique courante, jamais au-dela),
-| PUIS, si on est arrive exactement au '\n' de fin de ligne, le saute
-| aussi pour atteindre le debut de la ligne logique suivante. wd-tmp21
-| = scratch prive (borne line_end). )
-@wrap-next-start ( end* -- next* )
-    DUP2 line-end .wd-tmp21 STZ2
-    &skip
-        DUP2 .wd-tmp21 LDZ2 LTH2 #00 EQU ?{
-            DUP2 ;wd-buf ADD2 LDA #20 EQU #00 EQU ?{
-                #0001 ADD2 !&skip } }
-    DUP2 .wd-buflen LDZ2 LTH2 #00 EQU ?{
-        DUP2 ;wd-buf ADD2 LDA #0a EQU #00 EQU ?{ #0001 ADD2 } }
-JMP2r
-
-( ( cursor* -- row-start* ) : debut de la rangee visuelle qui contient
-| l'octet cursor -- balaie depuis le debut de la ligne LOGIQUE
-| contenante, rangee par rangee. Cas particulier (comme
-| editor_cursor_visual_row cote C) : un cursor EXACTEMENT a la fin
-| d'une rangee appartient a la rangee SUIVANTE, sauf si c'est la
-| DERNIERE rangee de sa ligne logique (rien apres), auquel cas il
-| appartient a celle-ci. wd-tmp31..33 = scratch prive. )
-@visual-row-start ( cursor* -- row-start* )
-    .wd-tmp31 STZ2
-    .wd-tmp31 LDZ2 line-start .wd-tmp32 STZ2
-    &loop
-        .wd-tmp32 LDZ2 .wd-text-width LDZ2 wrap-row-end .wd-tmp33 STZ2
-
-        .wd-tmp31 LDZ2 .wd-tmp33 LDZ2 LTH2 #00 EQU ?{ .wd-tmp32 LDZ2 JMP2r }
-
-        .wd-tmp31 LDZ2 .wd-tmp33 LDZ2 EQU2 #00 EQU ?{
-            .wd-tmp33 LDZ2 .wd-tmp32 LDZ2 line-end EQU2 #00 EQU ?{
-                .wd-tmp32 LDZ2 JMP2r } }
-
-        .wd-tmp33 LDZ2 wrap-next-start .wd-tmp32 STZ2
-        !&loop
-JMP2r
-
-( ( from* to* -- n* ) : nombre de rangees visuelles entre from (inclus)
-| et to (exclu) -- from et to doivent tous deux etre des DEBUTS de
-| rangee visuelle valides (jamais une position arbitraire au milieu),
-| garanti par les appelants (wd-scroll est maintenu comme tel par
-| clamp-scroll ; to vient toujours de visual-row-start). Meme role que
-| count-lines mais pour des rangees visuelles au lieu de lignes
-| logiques -- necessite un balayage rangee-par-rangee (pas de marqueur
-| par-octet comme '\n' pour reperer une frontiere de rangee visuelle).
-| wd-tmp27..30 = scratch prive. )
-@count-visual-rows ( from* to* -- n* )
-    .wd-tmp27 STZ2
-    .wd-tmp28 STZ2
-    #0000 .wd-tmp29 STZ2
-    &loop
-        .wd-tmp28 LDZ2 .wd-tmp27 LDZ2 LTH2 #00 EQU ?{
-            .wd-tmp28 LDZ2 .wd-text-width LDZ2 wrap-row-end .wd-tmp30 STZ2
-            .wd-tmp30 LDZ2 wrap-next-start .wd-tmp28 STZ2
-            .wd-tmp29 LDZ2 #0001 ADD2 .wd-tmp29 STZ2
-            !&loop }
-    .wd-tmp29 LDZ2
-JMP2r
-
-( ( row-start* -- prev-row-start* ) : debut de la rangee visuelle
-| PRECEDENTE -- soit dans la meme ligne logique (balayage depuis son
-| debut, en retenant la rangee juste avant la cible), soit la DERNIERE
-| rangee de la ligne logique precedente (balayage depuis son debut a
-| elle). Si row-start est deja tout au debut du document (aucune
-| rangee avant, nulle part), renvoie row-start INCHANGE -- c'est ce que
-| move-up teste pour savoir s'il doit rester immobile. wd-tmp40..47 =
-| scratch prive. )
-@visual-row-before ( row-start* -- prev-row-start* )
-    .wd-tmp40 STZ2
-    .wd-tmp40 LDZ2 line-start .wd-tmp41 STZ2
-
-    .wd-tmp40 LDZ2 .wd-tmp41 LDZ2 GTH2 #00 EQU ?{
-        .wd-tmp41 LDZ2 .wd-tmp42 STZ2
-        &walk1
-            .wd-tmp42 LDZ2 .wd-text-width LDZ2 wrap-row-end wrap-next-start .wd-tmp43 STZ2
-            .wd-tmp43 LDZ2 .wd-tmp40 LDZ2 LTH2 #00 EQU ?{
-                .wd-tmp43 LDZ2 .wd-tmp42 STZ2
-                !&walk1 }
-        .wd-tmp42 LDZ2 JMP2r }
-
-    .wd-tmp41 LDZ2 #0000 EQU2 #00 EQU ?{ .wd-tmp40 LDZ2 JMP2r }
-    .wd-tmp41 LDZ2 #0001 SUB2 line-start .wd-tmp44 STZ2
-    .wd-tmp44 LDZ2 line-end .wd-tmp45 STZ2
-    .wd-tmp44 LDZ2 .wd-tmp46 STZ2
-    &walk2
-        .wd-tmp46 LDZ2 .wd-text-width LDZ2 wrap-row-end .wd-tmp47 STZ2
-        .wd-tmp47 LDZ2 .wd-tmp45 LDZ2 LTH2 #00 EQU ?{
-            .wd-tmp47 LDZ2 wrap-next-start .wd-tmp46 STZ2
-            !&walk2 }
-    .wd-tmp46 LDZ2
-JMP2r
-
-( Detection de titre style Markdown ( start* -- flag ) : ^\s*#{1,6}[ \t]\S
-| -- espaces/tabs de tete tolerees avant les '#' (comme
-| is_markdown_heading_line cote writhdeck-c), 1 a 6 '#' consecutifs, un
-| espace ou une tabulation OBLIGATOIRE juste apres, puis au moins un
-| caractere de contenu avant la fin de ligne/tampon. Pas de style
-| txt2tags symetrique "= Titre =" dans cet amorcage -- simplification
-| deliberee au seul Markdown, voir README. Chaque branche relit l'octet
-| en memoire plutot que de le garder duplique sur la pile (DUP/POP) :
-| plus verbeux mais chaque bloc ?{ } devient trivialement equilibre
-| (rien n'est pousse sans etre depile sur TOUS les chemins), ce qui
-| evite la classe de bug "residu de pile" qu'un DUP mal reference
-| provoquerait silencieusement (uxn n'a aucune protection de faute,
-| voir CLAUDE.md). Utilise wd-tmp7/wd-tmp8 comme scratch prive : JAMAIS
-| wd-tmp1, le row-loop de wd-render doit le retrouver intact pour
-| appeler render-row juste apres cet appel. )
-@is-heading ( start* -- flag )
-    .wd-tmp7 STZ2
-
-    &ws1
-        .wd-tmp7 LDZ2 .wd-buflen LDZ2 LTH2 #00 EQU ?{
-            .wd-tmp7 LDZ2 ;wd-buf ADD2 LDA #20 EQU #00 EQU ?{
-                .wd-tmp7 LDZ2 #0001 ADD2 .wd-tmp7 STZ2 !&ws1 }
-            .wd-tmp7 LDZ2 ;wd-buf ADD2 LDA #09 EQU #00 EQU ?{
-                .wd-tmp7 LDZ2 #0001 ADD2 .wd-tmp7 STZ2 !&ws1 } }
-
-    #00 .wd-tmp8 STZ
-    &hash
-        .wd-tmp8 LDZ #06 LTH #00 EQU ?{
-            .wd-tmp7 LDZ2 .wd-buflen LDZ2 LTH2 #00 EQU ?{
-                .wd-tmp7 LDZ2 ;wd-buf ADD2 LDA #23 EQU #00 EQU ?{
-                    .wd-tmp7 LDZ2 #0001 ADD2 .wd-tmp7 STZ2
-                    .wd-tmp8 LDZ INC .wd-tmp8 STZ
-                    !&hash } } }
-
-    ( au moins un espace/tab OBLIGATOIRE juste apres les '#' -- si le
-    | compteur est reste a 0 (pas de '#' du tout), l'octet courant est
-    | garanti non-blanc par la boucle ws1 ci-dessus, donc ce test le
-    | rejette aussi tout seul : pas besoin d'un garde-fou separe sur
-    | wd-tmp8. )
-    .wd-tmp7 LDZ2 .wd-buflen LDZ2 LTH2 #00 EQU ?{ !&sep-check }
-    #00 JMP2r
-    &sep-check
-    .wd-tmp7 LDZ2 ;wd-buf ADD2 LDA #20 EQU #00 EQU ?{ !&content-check }
-    .wd-tmp7 LDZ2 ;wd-buf ADD2 LDA #09 EQU #00 EQU ?{ !&content-check }
-    #00 JMP2r
-
-    &content-check
-    .wd-tmp7 LDZ2 #0001 ADD2 .wd-tmp7 STZ2
-    &ws2
-        .wd-tmp7 LDZ2 .wd-buflen LDZ2 LTH2 #00 EQU ?{
-            .wd-tmp7 LDZ2 ;wd-buf ADD2 LDA #20 EQU #00 EQU ?{
-                .wd-tmp7 LDZ2 #0001 ADD2 .wd-tmp7 STZ2 !&ws2 }
-            .wd-tmp7 LDZ2 ;wd-buf ADD2 LDA #09 EQU #00 EQU ?{
-                .wd-tmp7 LDZ2 #0001 ADD2 .wd-tmp7 STZ2 !&ws2 } }
-
-    .wd-tmp7 LDZ2 .wd-buflen LDZ2 LTH2 #00 EQU ?{ !&have-content }
-    #00 JMP2r
-    &have-content
-    .wd-tmp7 LDZ2 ;wd-buf ADD2 LDA #0a NEQ #00 EQU ?{ #01 JMP2r }
-    #00 JMP2r
-
-( Detection de titre style txt2tags ( start* -- flag ) : ^\s*=\s*(.+?)\s*=\s*$
-| -- un seul '=' (le marqueur par defaut de writhdeck-c/writhdeck-asm,
-| voir highlight.asm:hl_default_heading_marker) en ouverture ET en
-| fermeture, contenu non vide entre les deux, espaces de tete/fin
-| tolerees. Pas de niveau (==/=== ...) extrait ici : la couleur est la
-| meme quel que soit le nombre de '=' consecutifs -- meme
-| simplification que writhdeck-asm, dont classify_line ne renvoie
-| aussi qu'un LINE_HEADING sans niveau (draw.asm).
-|
-| Preuve d'equivalence avec le double balayage de is_heading_line cote
-| C (qui cherche le marqueur de FERMETURE en partant de la fin) : la
-| SEULE position candidate qui puisse jamais satisfaire "tout ce qui
-| suit n'est que des espaces" est PRECISEMENT la position du dernier
-| octet non-espace de la ligne (tout candidat plus a gauche aurait ce
-| dernier octet non-espace dans sa propre queue, qui ne serait donc
-| plus entierement blanche ; tout candidat plus a droite serait lui-
-| meme un espace, donc ne matcherait jamais '='). Ca reduit le double
-| balayage a : retirer les espaces de fin, verifier que le dernier
-| octet restant est '=', verifier qu'il reste du contenu non-blanc
-| avant lui -- une seule passe supplementaire, pas un balayage
-| quadratique. wd-tmp9/wd-tmp10/wd-tmp11 = scratch prive, JAMAIS
-| wd-tmp1 (meme raison que is-heading ci-dessus : le row-loop de
-| wd-render en a besoin intact pour appeler render-row juste apres). )
-@is-heading-t2t ( start* -- flag )
-    .wd-tmp10 STZ2
-
-    ( p = premiere position non-blanche depuis start )
-    &ws1
-        .wd-tmp10 LDZ2 .wd-buflen LDZ2 LTH2 #00 EQU ?{
-            .wd-tmp10 LDZ2 ;wd-buf ADD2 LDA #20 EQU #00 EQU ?{
-                .wd-tmp10 LDZ2 #0001 ADD2 .wd-tmp10 STZ2 !&ws1 }
-            .wd-tmp10 LDZ2 ;wd-buf ADD2 LDA #09 EQU #00 EQU ?{
-                .wd-tmp10 LDZ2 #0001 ADD2 .wd-tmp10 STZ2 !&ws1 } }
-
-    ( octet a p doit etre '=' -- marqueur d'ouverture )
-    .wd-tmp10 LDZ2 .wd-buflen LDZ2 LTH2 #00 EQU ?{ !&open-check }
-    #00 JMP2r
-    &open-check
-    .wd-tmp10 LDZ2 ;wd-buf ADD2 LDA #3d EQU #00 EQU ?{ !&have-open }
-    #00 JMP2r
-    &have-open
-
-    ( q = p+1, espaces suivantes sautees -- fige dans wd-tmp9 )
-    .wd-tmp10 LDZ2 #0001 ADD2 .wd-tmp10 STZ2
-    &ws2
-        .wd-tmp10 LDZ2 .wd-buflen LDZ2 LTH2 #00 EQU ?{
-            .wd-tmp10 LDZ2 ;wd-buf ADD2 LDA #20 EQU #00 EQU ?{
-                .wd-tmp10 LDZ2 #0001 ADD2 .wd-tmp10 STZ2 !&ws2 }
-            .wd-tmp10 LDZ2 ;wd-buf ADD2 LDA #09 EQU #00 EQU ?{
-                .wd-tmp10 LDZ2 #0001 ADD2 .wd-tmp10 STZ2 !&ws2 } }
-    .wd-tmp10 LDZ2 .wd-tmp9 STZ2
-
-    ( retrait des espaces de fin, en partant de line-end(q) vers q )
-    .wd-tmp9 LDZ2 line-end .wd-tmp10 STZ2
-    &trim
-        .wd-tmp10 LDZ2 .wd-tmp9 LDZ2 GTH2 #00 EQU ?{
-            .wd-tmp10 LDZ2 #0001 SUB2 ;wd-buf ADD2 LDA #20 EQU #00 EQU ?{
-                .wd-tmp10 LDZ2 #0001 SUB2 .wd-tmp10 STZ2 !&trim }
-            .wd-tmp10 LDZ2 #0001 SUB2 ;wd-buf ADD2 LDA #09 EQU #00 EQU ?{
-                .wd-tmp10 LDZ2 #0001 SUB2 .wd-tmp10 STZ2 !&trim } }
-
-    ( wd-tmp10 pointe juste APRES le dernier octet non-espace (ou vaut
-    | q si tout est blanc) -- il faut qu'il reste strictement apres q
-    | pour qu'un marqueur de fermeture existe. )
-    .wd-tmp10 LDZ2 .wd-tmp9 LDZ2 GTH2 #00 EQU ?{ !&have-tail }
-    #00 JMP2r
-    &have-tail
-    .wd-tmp10 LDZ2 #0001 SUB2 .wd-tmp10 STZ2
-    ;wd-buf .wd-tmp10 LDZ2 ADD2 LDA #3d EQU #00 EQU ?{ !&check-content }
-    #00 JMP2r
-
-    ( contenu non-blanc requis strictement entre q (wd-tmp9) et le
-    | marqueur de fermeture (wd-tmp10, fige depuis have-tail) )
-    &check-content
-    .wd-tmp9 LDZ2 .wd-tmp11 STZ2
-    &scan
-        .wd-tmp11 LDZ2 .wd-tmp10 LDZ2 LTH2 #00 EQU ?{
-            .wd-tmp11 LDZ2 ;wd-buf ADD2 LDA #20 EQU #00 EQU ?{
-                .wd-tmp11 LDZ2 #0001 ADD2 .wd-tmp11 STZ2 !&scan }
-            .wd-tmp11 LDZ2 ;wd-buf ADD2 LDA #09 EQU #00 EQU ?{
-                .wd-tmp11 LDZ2 #0001 ADD2 .wd-tmp11 STZ2 !&scan } }
-    .wd-tmp11 LDZ2 .wd-tmp10 LDZ2 LTH2 #00 EQU ?{ #01 JMP2r }
-    #00 JMP2r
-
-( --- config .ini (marges) ---
-| Lit "writhd.ini" DANS LE REPERTOIRE COURANT UNIQUEMENT -- meme nom
-| que le fichier primaire de writhdeck-c/writhdeck-asm, mais SANS leur
-| repli sur "$HOME/Documents/writhdeck/writhdeck.ini" : uxn/Varvara
-| n'expose aucune variable d'environnement au programme (pas de
-| getenv), $HOME est donc structurellement inaccessible ici. Si
-| "writhd.ini" est absent ou vide, les defauts (6/4, memes valeurs que
-| cfg_load_defaults cote C) restent en place. Seules les cles
-| "margin_cols"/"margin_rows" de la section [editor] sont reconnues --
-| ni les alias "console_margin_cols"/"console_margin_rows", ni aucune
-| autre section/cle (word_goal, status_*, browser_*, timer_*...) --
-| simplification deliberee, cet amorcage n'implemente aucune des
-| fonctionnalites que ces autres cles configurent de toute facon. Le
-| format accepte est volontairement laxiste : tout ce qui n'est pas un
-| chiffre entre le nom de cle et sa valeur (espaces, '=', tabulations)
-| est simplement saute, donc "margin_cols=6", "margin_cols = 6" et
-| "margin_cols	=	6" sont tous acceptes sans distinction. )
-
-( ( pos* lit* -- flag ) : vrai si les octets a pos correspondent
-| EXACTEMENT aux octets du litteral NUL-termine lit, jusqu'a son NUL --
-| test de PREFIXE, pas d'egalite totale de ligne (pos peut continuer
-| au-dela). Bornee par .wd-buflen (repointee vers la taille du fichier
-| .ini pendant le parsing, voir load-config) ; pas besoin de borner
-| en plus par la fin de LIGNE ici -- un octet '\n' ne peut jamais
-| egaler un octet imprimable du litteral, la comparaison echoue donc
-| naturellement des qu'elle atteindrait un saut de ligne. wd-tmp14/
-| wd-tmp15 = scratch prive. )
-@buf-has-prefix ( pos* lit* -- flag )
-    .wd-tmp15 STZ2
-    .wd-tmp14 STZ2
-    &loop
-        ( litteral epuise (NUL) -- prefixe entierement reconnu )
-        .wd-tmp15 LDZ2 LDA #00 EQU #00 EQU ?{ #01 JMP2r }
-        .wd-tmp14 LDZ2 .wd-buflen LDZ2 LTH2 #00 EQU ?{ !&in-bounds }
-        #00 JMP2r
-        &in-bounds
-        ;wd-buf .wd-tmp14 LDZ2 ADD2 LDA
-        .wd-tmp15 LDZ2 LDA
-        EQU #00 EQU ?{ !&advance }
-        #00 JMP2r
-        &advance
-        .wd-tmp14 LDZ2 #0001 ADD2 .wd-tmp14 STZ2
-        .wd-tmp15 LDZ2 #0001 ADD2 .wd-tmp15 STZ2
-        !&loop
-JMP2r
-
-( ( pos* end* -- n* ) : saute tout octet NON-chiffre entre pos et end,
-| puis accumule les chiffres decimaux suivants (n = n*10 + chiffre)
-| jusqu'au premier octet non-chiffre ou end -- renvoie 0 si aucun
-| chiffre n'est jamais rencontre avant end. Test "est un chiffre" via
-| (octet-'0') <= 9 en arithmetique NON SIGNEE : si octet<'0', la
-| soustraction "sous-flotte" et redevient une valeur enorme (>9), donc
-| une SEULE comparaison GTH couvre les deux bornes. Polarite de GTH
-| ICI, exception documentee a la regle habituelle du fichier : le
-| bloc qui accumule doit s'executer sur le FAUX de "diff>9" (c'est un
-| chiffre) -- GTH brut, SANS inversion, correspond deja exactement a
-| ce que "?{ }" attend (0 declenche), l'inverser donnerait le
-| contraire. Le bloc qui SAUTE, lui, doit s'executer sur le VRAI de
-| "diff>9" (pas un chiffre) -- la regle habituelle (invert) s'applique
-| normalement la. wd-tmp17/wd-tmp18 = scratch prive, wd-tmp14 reutilise
-| (jamais actif en meme temps que buf-has-prefix, voir sa declaration). )
-@parse-ini-value ( pos* end* -- n* )
-    .wd-tmp17 STZ2
-    .wd-tmp14 STZ2
-
-    &skip
-        .wd-tmp14 LDZ2 .wd-tmp17 LDZ2 LTH2 #00 EQU ?{
-            ;wd-buf .wd-tmp14 LDZ2 ADD2 LDA #30 SUB #09 GTH #00 EQU ?{
-                .wd-tmp14 LDZ2 #0001 ADD2 .wd-tmp14 STZ2 !&skip } }
-
-    #0000 .wd-tmp18 STZ2
-    &accum
-        .wd-tmp14 LDZ2 .wd-tmp17 LDZ2 LTH2 #00 EQU ?{
-            ;wd-buf .wd-tmp14 LDZ2 ADD2 LDA #30 SUB #09 GTH ?{
-                .wd-tmp18 LDZ2 #000a MUL2
-                ;wd-buf .wd-tmp14 LDZ2 ADD2 LDA #30 SUB #00 SWP
-                ADD2 .wd-tmp18 STZ2
-                .wd-tmp14 LDZ2 #0001 ADD2 .wd-tmp14 STZ2
-                !&accum } }
-    .wd-tmp18 LDZ2
-JMP2r
-
-( ( start* -- ) : traite UNE ligne de l'ini -- bascule wd-in-editor-
-| section si c'est un en-tete de section (commence par '['), sinon --
-| si on est dans [editor] -- reconnait margin_cols/margin_rows.
-| wd-tmp16 = fin de cette ligne, calculee une fois, servant de borne a
-| parse-ini-value. )
-@parse-ini-line ( start* -- )
-    DUP2 line-end .wd-tmp16 STZ2
-
-    DUP2 ;wd-buf ADD2 LDA #5b EQU #00 EQU ?{
-        DUP2 ;ini-section-editor buf-has-prefix #00 NEQ #00 EQU ?{
-            POP2 #01 .wd-in-editor-section STZ JMP2r }
-        POP2 #00 .wd-in-editor-section STZ
-        JMP2r }
-
-    .wd-in-editor-section LDZ #00 NEQ #00 EQU ?{
-        DUP2 ;ini-key-margin-cols buf-has-prefix #00 NEQ #00 EQU ?{
-            #000b ADD2 .wd-tmp16 LDZ2 parse-ini-value .wd-margin-cols STZ2
-            JMP2r }
-        DUP2 ;ini-key-margin-rows buf-has-prefix #00 NEQ #00 EQU ?{
-            #000b ADD2 .wd-tmp16 LDZ2 parse-ini-value .wd-margin-rows STZ2
-            JMP2r } }
-    POP2
-JMP2r
-
-( Lit writhd.ini (s'il existe) DANS wd-buf lui-meme, reutilise comme
-| tampon SCRATCH temporaire -- sans danger : appelee depuis
-| finish-boot AVANT load-file/la reinitialisation de wd-buflen pour un
-| brouillon vide, donc rien de precieux n'y vit encore. .wd-buflen est
-| DELIBEREMENT repointee vers la taille du fichier .ini le temps du
-| parsing (pour reutiliser line-end/buf-has-prefix tels quels) --
-| finish-boot DOIT la reinitialiser correctement juste apres cet
-| appel (voir son commentaire). )
-@load-config ( -- )
-    #0006 .wd-margin-cols STZ2
-    #0004 .wd-margin-rows STZ2
-
-    ;ini-filename .File/name DEO2
-    #1000 .File/length DEO2
-    ;wd-buf .File/read DEO2
-    .File/success DEI2 .wd-tmp12 STZ2
-
-    .wd-tmp12 LDZ2 #0000 NEQ2 #00 EQU ?{
-        .wd-tmp12 LDZ2 .wd-buflen STZ2
-        #00 .wd-in-editor-section STZ
-        #0000 .wd-tmp13 STZ2
-        &ini-line-loop
-            .wd-tmp13 LDZ2 .wd-buflen LDZ2 LTH2 #00 EQU ?{
-                .wd-tmp13 LDZ2 parse-ini-line
-                .wd-tmp13 LDZ2 line-end #0001 ADD2 .wd-tmp13 STZ2
-                !&ini-line-loop } }
-JMP2r
-
-@count-lines ( from* to* -- n* )
-    STH2
-    #0000 .wd-tmp6 STZ2
-    &loop
-        DUP2 STH2kr LTH2 #00 EQU ?{
-            DUP2 ;wd-buf ADD2 LDA #0a EQU #00 EQU ?{
-                .wd-tmp6 LDZ2 #0001 ADD2 .wd-tmp6 STZ2 }
-            #0001 ADD2
-            !&loop }
-    POP2r
-    POP2
-    .wd-tmp6 LDZ2
-JMP2r
-
-( NIP2/POP2 dans le bon sens : stack (a b) apres le flag consomme --
-| si a<b, on veut GARDER a (le plus petit), donc POP2 (jette le TOP=b) ;
-| sinon on veut garder b, donc NIP2 (jette le second=a). Bug reel
-| rencontre en testant : ces deux-la etaient inverses, min2 renvoyait
-| le MAX -- move-up/move-down clampaient systematiquement le curseur
-| au bout de la ligne au lieu de la colonne visee. )
-@min2 ( a* b* -- min* )
-    OVR2 OVR2 LTH2 #00 EQU ?{ POP2 JMP2r }
-    NIP2
-JMP2r
-
-( Calcule les marges EFFECTIVES (repli a 0 si l'ecran est trop petit
-| pour les contenir) et les dimensions de la zone de texte qui en
-| decoulent -- meme algorithme que draw_editor cote writhdeck-asm
-| (text_width/text_top/text_bottom, voir draw.asm). A appeler en tout
-| debut de toute routine qui a besoin de ces valeurs (clamp-scroll,
-| wd-render) : ne modifie JAMAIS wd-margin-cols/wd-margin-rows
-| eux-memes (la config chargee une fois pour toutes), seulement leurs
-| variantes eff-*/text-*/usable-rows, recalculees a chaque appel --
-| "recalcul complet, pas de cache incremental", meme philosophie que
-| le reste de ce fichier. )
-@compute-layout ( -- )
-    .wd-margin-cols LDZ2 .wd-eff-margin-cols STZ2
-    .wd-margin-rows LDZ2 .wd-eff-margin-rows STZ2
-
-    ( horizontal : text_width = cols - 2*eff-margin-cols ; repli si <1 )
-    .wd-cols LDZ2 .wd-eff-margin-cols LDZ2 DUP2 ADD2 SUB2 .wd-text-width STZ2
-    .wd-text-width LDZ2 #0001 LTH2 #00 EQU ?{
-        #0000 .wd-eff-margin-cols STZ2
-        .wd-cols LDZ2 .wd-text-width STZ2 }
-
-    ( vertical : text_top = eff-margin-rows, text_bottom = (rows-1) -
-    | eff-margin-rows ; repli (marge=0, text_top=0, text_bottom=rows-1)
-    | si text_bottom <= text_top )
-    .wd-eff-margin-rows LDZ2 .wd-text-top STZ2
-    .wd-rows LDZ2 #0001 SUB2 .wd-eff-margin-rows LDZ2 SUB2 .wd-tmp19 STZ2
-    .wd-tmp19 LDZ2 .wd-text-top LDZ2 GTH2 #00 EQU ?{ !&rows-ok }
-    #0000 .wd-eff-margin-rows STZ2
-    #0000 .wd-text-top STZ2
-    .wd-rows LDZ2 #0001 SUB2 .wd-tmp19 STZ2
-    &rows-ok
-    .wd-tmp19 LDZ2 .wd-text-top LDZ2 SUB2 .wd-usable-rows STZ2
-JMP2r
-
-( wd-scroll est le debut OCTET d'une RANGEE VISUELLE, pas forcement
-| d'une ligne logique (une fois le word-wrap en jeu, il peut pointer
-| au milieu d'une longue ligne enroulee) -- clamp-scroll a la charge
-| de maintenir cet invariant : ne jamais l'ecrire avec autre chose que
-| ce que visual-row-start/wrap-next-start renvoient. )
-@clamp-scroll ( -- )
-    compute-layout
-    .wd-cursor LDZ2 visual-row-start .wd-tmp1 STZ2
-    .wd-tmp1 LDZ2 .wd-scroll LDZ2 LTH2 #00 EQU ?{
-        .wd-tmp1 LDZ2 .wd-scroll STZ2
-        JMP2r }
-    ( boucle : tant que le nombre de rangees visuelles entre wd-scroll
-    | et la rangee du curseur est >= au nombre de rangees utilisables,
-    | avance wd-scroll d'une rangee. "count-visual-rows(...) < usable"
-    | SANS inversion ici (contrairement a la plupart des boucles de ce
-    | fichier) : on veut continuer PRECISEMENT quand la comparaison
-    | brute est FAUSSE (count >= usable, ca ne rentre pas encore) --
-    | inverser ici serait boucler indefiniment des que wd-scroll
-    | depasse la rangee du curseur (meme piege reel que documente plus
-    | haut pour la version pre-word-wrap de cette boucle, avec
-    | count-lines/wd-rows-1). )
-    &loop
-        .wd-scroll LDZ2 .wd-tmp1 LDZ2 count-visual-rows .wd-usable-rows LDZ2 LTH2 ?{
-            .wd-scroll LDZ2 .wd-text-width LDZ2 wrap-row-end wrap-next-start .wd-scroll STZ2
-            !&loop }
-JMP2r
-
 ( imprime n* espaces -- utilise pour la marge gauche avant chaque
-| rangee de texte. wd-tmp20 = scratch prive. )
+| rangee de texte. wd-tmp20 = scratch prive DE CETTE ENTREE (le rendu
+| console est la seule chose qui a besoin d'imprimer des espaces --
+| l'entree graphique saute juste des colonnes de pixels). )
+@wd-tmp20 $2
 @print-spaces ( n* -- )
     .wd-tmp20 STZ2
     &loop
@@ -1001,10 +295,6 @@ JMP2r
     ;wd-fname str-log
 JMP2r
 
-@count-lines-from-zero ( to* -- n* )
-    #0000 SWP2 count-lines
-JMP2r
-
 ( Rangee/colonne ECRAN decalees par wd-text-top/wd-eff-margin-cols
 | (voir compute-layout, deja appelee par wd-render juste avant cet
 | appel -- valeurs encore fraiches). )
@@ -1084,28 +374,8 @@ JMP2r
 @status-comma 2c 00
 @status-dirty 20 "[+] 00
 
-( noms de 11 octets chacun -- voir #000b (=11) dans parse-ini-line,
-| l'avance apres le nom de cle avant de lire la valeur numerique. )
-@ini-filename "writhd.ini 00
-@ini-section-editor "[editor] 00
-@ini-key-margin-cols "margin_cols 00
-@ini-key-margin-rows "margin_rows 00
-
 @wd-meta [ $1
     "writhdeck-uxn 0a
-    "amorce 20 "console-mode 0a 00 ]
+    "console-mode 0a 00 ]
 
-( |1000/|1100 (bootstrap initial) sont devenus trop etroits : le
-| code+donnees s'etend maintenant au-dela de 0x1000 (word-wrap, marges,
-| .ini, titres txt2tags) -- uxnasm ne detecte PAS ce chevauchement, il
-| rembobine silencieusement le curseur d'assemblage en arriere et
-| laisse la reservation de wd-fname/wd-buf ecraser toute donnee deja
-| ecrite dans cette plage (bug reel rencontre en testant : ini-filename/
-| wd-meta atterrissaient a l'interieur de la zone reservee a wd-fname,
-| corrompant leur contenu et provoquant un blocage silencieux au tout
-| premier Ctrl+Q -- rien a voir avec Ctrl+Q lui-meme, juste la premiere
-| chose lue depuis de la memoire deja corrompue). |1400/|1500 laissent
-| une marge confortable au-dessus de la taille actuelle (~0x1052) pour
-| absorber de futurs ajouts sans repeter ce piege. )
-|1400 @wd-fname $100
-|1500 @wd-buf $eb00
+~src/core.tal

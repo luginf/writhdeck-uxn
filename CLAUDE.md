@@ -1,12 +1,21 @@
 # CLAUDE.md — writhdeck-uxn
 
 Portage Uxntal (langage d'assemblage de la VM [uxn](https://100r.co/site/uxn.html))
-de WrithDeck, ciblant le device **Console** (mode terminal, pas le
-device Screen/graphique) — voir `README.md` pour le périmètre exact
-(touches supportées, limites connues, instructions de build). Ce
-fichier documente les pièges rencontrés en construisant ce portage et
-les conventions à connaître avant d'y toucher, notamment pour
-reprendre le travail depuis une autre machine.
+de WrithDeck. Deux entrées produisant deux roms distincts, partageant
+toute la logique d'édition via `src/core.tal` (voir "Architecture
+console/graphique" plus bas) :
+- `src/writhdeck.tal` → `bin/writhdeck.rom`, device **Console** (mode
+  terminal, ANSI/VT100) — le portage original, testé automatiquement
+  (`tests/`, pty).
+- `src/writhdeck-gfx.tal` → `bin/writhdeck-gfx.rom`, device
+  **Screen+Controller** (mode graphique, `uxnemu`) — ajouté ensuite,
+  **jamais vérifié visuellement** (voir piège #17).
+
+Voir `README.md` pour le périmètre exact (touches supportées, limites
+connues, instructions de build). Ce fichier documente les pièges
+rencontrés en construisant ce portage et les conventions à connaître
+avant d'y toucher, notamment pour reprendre le travail depuis une
+autre machine.
 
 ## Pourquoi le mode console (contexte de la décision)
 
@@ -351,6 +360,143 @@ dans le harnais de test ou l'environnement, pas dans les changements en
 cours ; (3) ne revenir au traçage `putc`/`wd-print-dec` dans le code
 QUE si (2) prouve que le commit precedent fonctionnait.
 
+### 15. Détection dynamique de la taille du terminal (DSR) : même inversion de polarité que le piège #10, sur un NOUVEAU test "est un chiffre"
+
+`on-sizereply` (parse la réponse `ESC[row;colR` à la requête DSR
+envoyée par `send-size-query`, idiome repris de `kibi.tal`) accumule
+les chiffres de la rangée puis de la colonne. Première version, cassée
+silencieusement : `DUP #30 SUB #09 GTH ?{ POP #00 .wd-sz-state STZ BRK
+}` pour "si ce n'est PAS un chiffre, resynchroniser l'état machine à
+0". Ça a exécuté le bloc de resync sur CHAQUE chiffre reçu au lieu de
+l'inverse -- confusion entre les deux idiomes déjà en place dans
+`parse-ini-value` (piège #10) : la boucle de skip y utilise `GTH #00
+EQU ?{ avancer }` (règle standard : `?{ }` s'exécute sur la condition
+NATURELLE une fois complémentée), alors que la boucle d'accumulation
+utilise l'exception documentée `GTH ?{ accumuler }` SANS `#00 EQU`
+(parce que `GTH` y vaut déjà 0 exactement quand c'est un chiffre,
+polarité qui coïncide par chance avec ce que `?{ }` attend). En
+écrivant le test "si non-chiffre, resynchroniser", j'ai copié la
+mauvaise moitié de cette paire -- résultat : chaque chiffre de la
+réponse DSR déclenchait un retour à l'état 0, qui ignore ensuite tout
+octet qui n'est pas ESC, donc toute la réponse `ESC[row;colR` se
+faisait avaler sans jamais atteindre `R` → le boot restait bloqué en
+silence (aucune erreur, aucun rendu). Diagnostiqué en pilotant le rom
+via un script pty qui répond bien au DSR (`ESC[24;80R`) et en observant
+zéro octet de sortie après l'avoir envoyé. Corrigé en ajoutant le `#00
+EQU` manquant aux DEUX endroits ("si non-chiffre, resync" pour la
+rangée ET pour la colonne) -- suit la règle STANDARD du fichier, pas
+l'exception.
+
+**Comment appliquer :** avant d'écrire un nouveau test "est un chiffre"
+ailleurs dans ce fichier, choisir consciemment laquelle des deux formes
+de `parse-ini-value` copier -- `GTH #00 EQU ?{ }` (règle standard, à
+utiliser pour "si CE N'EST PAS un chiffre") ou `GTH ?{ }` sans `#00
+EQU` (exception, valide UNIQUEMENT pour "si c'EST un chiffre", et
+seulement parce que `GTH` y a la polarité qui arrange). Ne jamais
+copier l'un en pensant obtenir l'autre.
+
+### 16. Un harnais de test pty doit répondre à la requête DSR, sinon le boot ne démarre jamais
+
+Depuis l'ajout de la détection dynamique de taille (piège #15), le
+boot envoie `ESC[999C ESC[999B ESC[6n` et attend la réponse `ESC[row;
+colR` AVANT de basculer vers `on-keypress`/premier rendu -- comme
+`kibi.tal`. Un vrai terminal répond automatiquement ; un pty piloté par
+un script Python ne le fait PAS tout seul (rien n'interprète les
+séquences ANSI côté maître du pty). Tous les scripts de test pty de ce
+projet ont dû être mis à jour pour injecter la réponse eux-mêmes
+(`os.write(master, f"\x1b[{rows};{cols}R".encode())`) après un court
+délai suivant le démarrage -- sans ça, chaque test se bloque
+indéfiniment au même endroit (voir piège #14 pour la méthode qui
+distingue ce genre de blocage-par-conception d'un vrai bug). C'est
+précisément pourquoi cette logique vit maintenant dans UN SEUL endroit
+partagé, `tests/pty_harness.py::run()`, plutôt que dupliquée dans
+chaque script `tests/pty_uxn_*.py` -- avant cette factorisation, le fix
+ci-dessus a dû être appliqué identiquement dans six fichiers séparés.
+Tout nouveau script de test doit passer par ce harnais, pas piloter
+`uxncli` directement.
+
+## Architecture console/graphique : `src/core.tal`
+
+`src/core.tal` contient tout ce qui est indépendant du device de
+sortie : tampon plat, édition (`insert-byte`/`backspace`/`shift-*`),
+curseur/word-wrap (`move-*`/`wrap-*`/`visual-row-*`), marges/.ini
+(`compute-layout`/`load-config`/`parse-ini-*`), classification des
+titres (`is-heading`/`is-heading-t2t`), chargement/sauvegarde
+(`load-file`/`save-file`, device `File`), et la capture d'argv
+(`on-argv`, device `Console` -- partagée car `console_arguments()` est
+utilisée par `uxnemu` ET `uxncli`, voir `uxn/src/uxnemu.c:488`). Inclus
+en toute fin de `writhdeck.tal` ET `writhdeck-gfx.tal` via `~src/
+core.tal` (même idiome que `left.tal`/`menu.tal`/`utils.tal` dans
+l'écosystème uxn de référence). Chaque entrée définit son propre
+`@entry-finish-boot` (appelé par `core-boot` une fois le fichier/.ini
+chargés) pour démarrer sa boucle interactive et son premier rendu à sa
+manière.
+
+**Adresses fixes, choisies avec marge** (voir piège #13 : `uxnasm` ne
+détecte PAS un chevauchement de `|ADDR` en arrière) : `|0020`-`|002f`
+pour les variables propres à CHAQUE entrée (budget volontairement
+large : la console y range `wd-esc-state`/`wd-sz-*`/`wd-dcount`, le
+graphique `gfx-*`), `|0030` pour les variables PARTAGÉES (`core.tal`),
+`|0100` pour le code propre à l'entrée, `|2000` pour le code partagé
+(`core.tal`), `|4000`/`|4100` pour `wd-fname`/`wd-buf`. Après toute
+modification significative de taille d'un des deux fichiers, vérifier
+via `.rom.sym` (même technique qu'au piège #13) qu'aucun label
+n'atterrit dans une plage réservée à l'autre section, POUR LES DEUX
+ROMS -- un chevauchement dans `writhdeck-gfx.tal` ne casserait PAS les
+tests automatisés (qui ne couvrent que la console), donc rien ne
+l'attraperait autrement.
+
+### 17. `writhdeck-gfx.tal` n'a JAMAIS été vérifié visuellement -- aucun affichage ni Xvfb dans cet environnement
+
+`uxnemu` (device Screen) a besoin d'un vrai serveur d'affichage SDL ;
+`uxnfb` (framebuffer Linux direct) a besoin d'un vrai `/dev/fb0` et de
+périphériques d'entrée réels. Aucun des deux n'est pilotable en boîte
+noire dans cet environnement (contrairement à `uxncli`, piloté via pty
+pour toute la suite `tests/`) -- `make rom-gfx` assemble sans erreur et
+`.rom.sym` confirme l'absence de chevauchement d'adresses, mais rien de
+plus n'a jamais tourné à l'écran. Plusieurs bugs réels ont été trouvés
+et corrigés a posteriori par relecture manuelle méticuleuse (rejeu
+symbole par symbole de la polarité de chaque `?{ }`, voir piège #1) --
+pas par test :
+- Layout du device `System` copié tel quel depuis un fichier de
+  référence DIFFÉRENT (`uxn/projects/examples/gui/terminal.tal`,
+  version de spec Varvara différente) au lieu de reprendre le layout
+  DÉJÀ VÉRIFIÉ de ce projet (`wst`/`rst`=0x04/0x05, `metadata`=0x06-07,
+  `state`=0x0f, confirmé dans `uxn/src/devices/system.c`) -- aurait
+  écrit `System/r`/`g`/`b` (thème) aux mauvais ports. Corrigé en
+  repartant du layout vérifié et en confirmant `r`/`g`/`b`=0x08/0x0a/
+  0x0c via `uxn/src/devices/screen.c:screen_palette` avant d'ajouter
+  quoi que ce soit.
+- `Controller/button DEI .wd-tmp1 STZ2` -- `DEI` (pas `DEI2`) ne pousse
+  qu'UN octet, `STZ2` en dépile deux : même classe de bug que le piège
+  #11 (résidu de pile silencieux). Corrigé en `STZ`.
+- Trois inversions de polarité `?{ }` DANS DU CODE JAMAIS EXÉCUTÉ (donc
+  aucun symptôme observable, juste une relecture symbole-par-symbole
+  qui les a trouvées) : (1) `on-button` testait "key != 0" avec `NEQ`
+  pour sauter vers le traitement des flèches quand `key==0` -- aurait
+  rendu les flèches QUASIMENT INUTILISABLES (le saut n'arrivait que
+  quand une touche de texte ET les flèches survenaient au même appel,
+  jamais en pratique) ; (2) le test Ctrl-enfoncé utilisait aussi `NEQ`
+  au lieu de `EQU`, ce qui aurait fait sauter Ctrl+Q/Ctrl+S/Ctrl+E
+  quand Ctrl n'était PAS enfoncé -- taper un 'q'/'s'/'e' minuscule tout
+  seul aurait quitté/sauvegardé/déplacé le curseur au lieu de s'insérer
+  comme texte ; (3) `draw-str`/`draw-spaces` utilisaient `NEQ`/`NEQ2`
+  pour détecter respectivement le NUL de fin de chaîne et le compteur
+  à zéro -- aurait causé une boucle infinie lisant la mémoire au-delà
+  du terminateur, ou l'inverse (ne jamais dessiner). Les trois corrigés
+  en `EQU`/`EQU2`. Rejouer la méthode du piège #1 (calculer le flag
+  NATUREL de la condition, PUIS ajouter `#00 EQU`) très explicitement,
+  une ligne à la fois, plutôt que de faire confiance à l'intuition --
+  c'est exactement ce qui a fini par débusquer ces trois-là.
+
+**Comment appliquer :** avant de faire confiance à du code Uxntal
+jamais exécuté, rejouer CHAQUE `?{ }` à la main (table de vérité
+complète, pas juste "ça a l'air bon") et vérifier CHAQUE layout de
+device fixe contre le fichier `.c` source correspondant dans
+`uxn/src/devices/` -- ne jamais copier un layout depuis un AUTRE
+fichier `.tal` de référence sans le revérifier, même si ce fichier
+fonctionne (il peut cibler une version différente de la spec Varvara).
+
 ## Bug de logique réel (pas un piège de langage) : `min2`
 
 `move-up`/`move-down` utilisent `min2 ( a* b* -- min* )` pour clamper
@@ -368,10 +514,20 @@ opcodes.
 ## Où regarder pour le contexte fonctionnel
 
 - `README.md` : périmètre exact, touches supportées, limites connues
-  (curseur en octets, pas de wrap, pas de tests automatisés, sandbox
-  fichiers), instructions de build/run.
+  (curseur en octets, sandbox fichiers), instructions de build/run/test
+  pour les DEUX entrées (console et graphique).
 - `src/writhdeck.tal` : commentaire d'en-tête qui documente la règle
   de polarité `?{ }` et les décisions de portée du bootstrap.
+- `src/core.tal` : logique partagée console/graphique -- voir
+  "Architecture console/graphique" plus haut.
+- `src/writhdeck-gfx.tal` : entrée graphique, JAMAIS vérifiée
+  visuellement (piège #17) -- toute modification doit être relue à la
+  main aussi rigoureusement qu'écrite, pas juste "ça assemble".
+- `tests/` : suite de régression pty (`make test`) -- COUVRE
+  UNIQUEMENT LA CONSOLE (voir piège #17, `uxnemu`/`uxnfb` non
+  pilotables en boîte noire ici). `tests/pty_harness.py` pour le
+  harnais partagé (répond notamment à la requête DSR de taille de
+  terminal, voir piège #16).
 - `../writhdeck-c` et `../writhdeck-asm` : ports de référence pour la
   logique métier (buffer, édition, rendu) en cas de doute sur un
   comportement souhaité au-delà de ce premier amorçage.
