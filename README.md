@@ -170,6 +170,66 @@ Terminal size is simpler here than in console mode: `Screen/width` and
 round-trip needed), so `wd-cols`/`wd-rows` are just those values
 divided by the glyph size (8/16px).
 
+**Loading a file: pass it as an argument, not via stdin.** Both
+`uxnemu` and `uxn2` read the ROM's first extra argument through
+`Console/type` (`ARG`/`EOA`/`END`) exactly the same way `uxncli` does
+for the console build — `on-argv` in `core.tal` captures it into
+`wd-fname` and loads it before the first frame is drawn:
+
+```
+uxnemu bin/writhdeck-gfx.rom path/to/file.txt
+# or
+make run-gfx FILE=path/to/file.txt
+```
+
+`uxn2 bin/writhdeck-gfx.rom < file.txt` does **not** load `file.txt` —
+stdin redirection has nothing to do with argv. Both emulators also run
+a background thread that streams the real process stdin (piped file or
+not) into the `Console` device as keystrokes for as long as the
+program runs, at the C level, unconditionally — confirmed by reading
+`uxnemu.c`/`uxn2.c`'s `stdin_handler`. Since this entry has no use for
+`Console` past the initial argv capture (input comes from
+`Controller`, not `Console`), `entry-finish-boot` explicitly rebinds
+`Console/vector` to `0000` right after boot to silence it — earlier
+versions of this port left it bound to `on-argv`, so any stray stdin
+traffic (e.g. `< file.txt`) kept re-triggering a full reload on every
+byte, which looked exactly like "nothing loads".
+
+Launching with **no file argument at all** (`uxnemu bin/writhdeck-gfx.rom`,
+empty draft) now works too — it used to leave a permanently black
+window. Neither emulator sends a single `Console` event of any kind
+when there's no extra argument (their argv-forwarding loop in `main()`
+is a plain `for` over the extra arguments and just doesn't run when
+there are none), so `on-argv`'s fallback — the only thing that used to
+trigger `core-boot`, and thus the first ever `gfx-render` — never
+fired, and the window sat on whatever the framebuffer starts at
+(black) forever. Fixed by wiring `Screen/vector` (which the emulator
+calls once per frame, unconditionally, only after the window opens —
+by which point any argv has already been delivered synchronously) to
+a one-shot fallback, `on-first-frame`, that runs `core-boot` if
+`on-argv` hasn't already done so. Guarded by `gfx-booted` so the two
+possible triggers (`on-argv` for the with-file case, `on-first-frame`
+for the without-file case) never both fire.
+
+**Typing/loading accented text**: `SDL_TEXTINPUT` delivers the raw
+UTF-8 bytes of composed keystrokes through `Controller/key`, one byte
+per vector call (confirmed in `uxnemu.c`/`uxn2.c`) — so accented bytes
+*are* inserted into the buffer correctly, same as any other byte
+`on-button` accepts. What used to be invisible was purely the
+*display*: the bitmap font has no accented glyphs, so those bytes drew
+as blank spaces. `gfx-utf8-decode` (in `writhdeck-gfx.tal`) now
+recognizes the 2-byte UTF-8 form of Latin-1 Supplement (lead `0xc3`,
+covering all the accented letters used in French) and substitutes the
+matching unaccented base letter (`é` → `e`, `ç` → `c`, ...) using
+glyphs the font already has — no new pixel art, nothing that needs
+eyeballing beyond what already covers the ASCII alphabet. The saved
+file is unaffected (exact original UTF-8 bytes); only the on-screen
+representation drops the diacritic. One cosmetic side effect: word-wrap
+and cursor placement still count bytes, not glyphs, so the cursor/line
+padding can drift by one column after a rendered accent within the
+same row — see the file's own comment above `gfx-utf8-decode` for the
+full reasoning.
+
 **Keyboard differences from the console build**, both consequences of
 what Varvara's `Controller` device actually exposes, not choices made
 by this port:
@@ -185,13 +245,15 @@ by this port:
   re-fires the Controller vector (same as OS-level key repeat in a
   terminal) rather than through explicit key-repeat logic in this
   port.
-- Non-ASCII text renders poorly: the bitmap font only has glyphs for
-  ASCII `0x20`–`0x7d`. Multi-byte UTF-8 sequences (e.g. typed or loaded
-  accented characters) each render as one blank/placeholder glyph per
-  byte instead of one correct character — a real loss of fidelity
+- Non-ASCII text still renders imperfectly: the bitmap font only has
+  glyphs for ASCII `0x20`–`0x7d`. French Latin-1 accents (`é`, `è`,
+  `ç`, ...) get substituted with their unaccented base letter (see
+  above); anything else multi-byte (other scripts, emoji, ...) still
+  renders as one blank glyph per byte — a real loss of fidelity
   compared to the console build, which hands UTF-8 decoding off to the
   host terminal entirely. The underlying buffer and saved file remain
-  byte-faithful either way; only the on-screen glyph is wrong.
+  byte-faithful either way; only the on-screen glyph is approximate or
+  missing.
 
 **No automated verification exists for this entry** — see "Known
 limitations".

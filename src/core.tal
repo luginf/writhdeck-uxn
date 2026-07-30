@@ -16,8 +16,9 @@
 | Adresses fixes choisies avec une marge confortable (voir CLAUDE.md
 | piege #13 sur uxnasm qui ne detecte PAS un chevauchement de `|ADDR`
 | en arriere) : |0030 pour les variables partagees (zero-page haut,
-| apres la plage |0020-|002f reservee aux quelques variables PROPRES a
-| chaque entree), |2000 pour le CODE partage ci-dessous (tres au-dela
+| apres la plage |0000-|002f reservee aux quelques variables PROPRES a
+| chaque entree -- console : |0020-|002f ; graphique : |001c-|002f, voir
+| writhdeck-gfx.tal), |2000 pour le CODE partage ci-dessous (tres au-dela
 | de la fin du code propre a n'importe quelle entree), |4000/|4100 pour
 | les tampons fichier/texte. Verifier via `.rom.sym` apres toute
 | modification significative de taille, des deux cotes (console ET

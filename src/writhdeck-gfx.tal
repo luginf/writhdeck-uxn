@@ -43,8 +43,15 @@
 %x16 ( n* -- px* ) { #40 SFT2 }   ( n*16 : rangee caractere -> pixel, glyphe haut de 16px )
 
 ( zero-page PROPRE a cette entree (les variables partagees sont dans
-| core.tal, a |0030). )
-|0020
+| core.tal, a |0030). Demarre a |001c (pas |0020) pour laisser la place
+| aux 4 octets de gfx-b1/gfx-b2/gfx-consumed ci-dessous sans deborder
+| dans la plage partagee |0030 -- voir gfx-utf8-decode. )
+|001c
+@gfx-b1         $1  ( gfx-utf8-decode : premier octet lu, scratch prive )
+@gfx-b2         $1  ( gfx-utf8-decode : octet de continuation UTF-8, scratch prive )
+@gfx-consumed   $2  ( gfx-render : nombre d'octets du tampon consommes par
+                    | le dernier appel a gfx-utf8-decode -- 1 normalement,
+                    | 2 pour une paire reconnue comme accent latin-1 )
 @gfx-dcount     $1  ( gfx-draw-dec : nombre de chiffres empiles sur rst,
                     | meme role que wd-dcount cote console )
 @gfx-row        $2  ( compteur de rangee ECRAN, phases marge haut/bas )
@@ -66,6 +73,9 @@
                     | Screen, chaque rangee est donc TOUJOURS redessinee
                     | sur toute sa largeur, contrairement a la console
                     | qui s'appuie sur clear-eol du terminal hote. )
+@gfx-booted     $1  ( evite un double core-boot entre les deux chemins
+                    | possibles (on-argv si un fichier a ete donne,
+                    | on-first-frame sinon) -- voir on-first-frame )
 
 |0100
 
@@ -86,17 +96,40 @@
     #06 .Screen/auto DEO
     #0000 .wd-arg-num STZ2
     #00 .wd-fname-len STZ
+    #00 .gfx-booted STZ
     ;on-argv .Console/vector DEO2
+    ;on-first-frame .Screen/vector DEO2
 BRK
 
 ( Appelee par core-boot (core.tal) une fois le fichier/.ini charges.
 | Contrairement a la console, aucune ronde-trip async n'est necessaire
 | ici : Screen/width et Screen/height sont deja exacts et disponibles
 | immediatement (DEI2 synchrone), pas besoin d'une requete DSR ni d'une
-| machine a etats pour attendre une reponse. )
+| machine a etats pour attendre une reponse.
+|
+| Console/vector est desabonne ICI (mis a 0000) une fois l'argv capture --
+| bug reel trouve en testant : uxnemu/uxn2 font tourner un thread stdin
+| qui lit le vrai stdin du PROCESSUS EN CONTINU et pousse un evenement
+| Console (type STD) par octet lu, QUE stdin soit un vrai terminal ou une
+| redirection (`< fichier`) -- voir uxn2.c:stdin_handler/emu_event et
+| uxnemu.c:stdin_handler/handle_events, tous deux inconditionnels. Tant
+| que Console/vector restait branche sur on-argv (core.tal), CHAQUE octet
+| de stdin re-declenchait la branche de repli de on-argv (ni ARG ni EOA)
+| qui rappelle core-boot -- rechargement du fichier, remise a zero du
+| curseur/scroll/dirty, nouveau rendu, en boucle, UNE FOIS PAR OCTET.
+| C'est ce qui donnait l'impression que "rien ne se charge" avec
+| `uxn2 writhdeck-gfx.rom < fichier.txt` : ce mode graphique n'utilise
+| JAMAIS stdin pour charger du texte (voir README) -- le chemin du
+| fichier doit etre un ARGUMENT (`uxn2 writhdeck-gfx.rom fichier.txt`,
+| ou `make run-gfx FILE=fichier.txt`), capture via Console/type
+| ARG/EOA/END exactement comme cote console (voir on-argv, core.tal) ;
+| une fois cette capture terminee, plus aucun evenement Console ne nous
+| interesse ici (les touches arrivent par Controller, pas Console). )
 @entry-finish-boot ( -- )
+    #01 .gfx-booted STZ
     .Screen/width DEI2 x8-inv .wd-cols STZ2
     .Screen/height DEI2 x16-inv .wd-rows STZ2
+    #0000 .Console/vector DEO2
     ;on-button .Controller/vector DEO2
     gfx-render
 JMP2r
@@ -105,6 +138,37 @@ JMP2r
 | nibble de decalage a DROITE cette fois (decalage a gauche=0). )
 @x8-inv ( px* -- n* ) #03 SFT2 JMP2r
 @x16-inv ( px* -- n* ) #04 SFT2 JMP2r
+
+( Repli GARANTI pour demarrer core-boot MEME SANS argument fichier --
+| bug reel trouve en testant : sans argument, uxnemu/uxn2 n'envoient
+| JAMAIS le moindre octet Console/type. Leur boucle d'envoi d'argv,
+| dans main(), est un simple `for` sur les arguments EXTRA du ROM -- si
+| aucun n'a ete passe, elle ne s'execute pas DU TOUT (voir uxn2.c/
+| uxnemu.c). on-argv (core.tal) ne demarre donc core-boot QUE si un
+| fichier a ete donne -- sans repli, l'ecran restait NOIR pour toujours
+| (rien n'est jamais dessine) en lancant ce ROM sans argument, puisque
+| plus aucun evenement Console n'arrivait ensuite (le thread stdin de
+| l'emulateur lit le VRAI stdin du PROCESSUS, sans rapport avec les
+| touches tapees dans la fenetre SDL -- voir la note sur Console/vector
+| dans entry-finish-boot ci-dessus).
+|
+| Screen/vector, lui, est TOUJOURS appele par l'emulateur a chaque
+| frame une fois la fenetre ouverte (screen_update() dans uxn2.c/
+| uxnemu.c) -- et l'envoi synchrone de l'argv (s'il y en a un) a
+| TOUJOURS deja fini AVANT que la fenetre n'ouvre (voir l'ordre dans
+| main() : argv d'abord, puis emu_init()/emu_run()). Le tout premier
+| appel de ce vecteur est donc un signal fiable de "core-boot doit
+| avoir tourne maintenant, qu'un fichier ait ete donne ou non".
+| gfx-booted evite de le relancer une seconde fois si on-argv l'a deja
+| fait plus tot (chemin fichier, synchrone, avant meme ce premier
+| appel). Se desabonne lui-meme immediatement : inutile au-dela de ce
+| tout premier appel, jamais besoin d'un redessin base sur les frames
+| ensuite (voir on-button, qui redessine explicitement apres chaque
+| frappe). )
+@on-first-frame ( -- )
+    #0000 .Screen/vector DEO2
+    .gfx-booted LDZ #00 NEQ #00 EQU ?{ core-boot }
+JMP2r
 
 ( --- boucle interactive ---
 | Controller/key est un PULSE auto-remis a zero par la VM des que ce
@@ -187,10 +251,11 @@ BRK
     SWP
     ( clampe tout octet hors [0x20,0x7d] a l'espace -- evite de lire
     | au-dela de la table pour les octets de controle, DEL, ou les
-    | octets de tete/continuation UTF-8 (0x80-0xff) : cette police
-    | n'a pas de glyphe accentue, un caractere multi-octets s'affiche
-    | donc comme autant d'octets-espaces que d'octets qui le composent
-    | plutot que comme un seul caractere -- perte de fidelite visuelle
+    | octets de tete/continuation UTF-8 (0x80-0xff) qui n'ont pas ete
+    | reconnus par gfx-utf8-decode (voir plus bas) comme une paire
+    | accentuee latin-1 -- cette police n'a de toute facon aucun
+    | glyphe ACCENTUE, un tel octet s'affiche donc comme un espace
+    | plutot que comme un caractere -- perte de fidelite visuelle
     | reelle par rapport a la console (qui delegue tout le decodage
     | UTF-8 au terminal hote), voir README. )
     DUP #20 LTH #00 EQU ?{ POP #20 }
@@ -200,6 +265,98 @@ BRK
     .Screen/y DEI2 #0010 SUB2 .Screen/y DEO2
     .Screen/x DEI2 #0008 ADD2 .Screen/x DEO2
 JMP2r
+
+( --- accents latin-1 (UTF-8 2 octets) ---
+| La police terminus01x02 n'a AUCUN glyphe accentue (voir draw-char) --
+| plutot que d'afficher les lettres françaises accentuees comme des
+| espaces invisibles (ce qui donnait l'impression a l'utilisateur de ne
+| "pas pouvoir taper d'accent", alors que l'octet ETAIT bien insere dans
+| le tampon -- voir on-button/insert-byte, inchange), on reconnait ici
+| la forme UTF-8 a 2 octets du bloc Latin-1 Supplement (lead 0xc3,
+| continuation 0x80-0xbf -- couvre TOUTES les lettres accentuees
+| francaises usuelles : à â ä ç è é ê ë î ï ô ù û ü ÿ et leurs
+| majuscules) et on affiche a la place la lettre de base SANS accent
+| (ex. 'é' -> 'e') en reutilisant un glyphe DEJA existant de la police --
+| aucun nouveau dessin de pixels, donc rien qui ait besoin d'etre
+| verifie a l'oeil au-dela de ce qui l'est deja pour l'alphabet ASCII.
+| Fidelite du FICHIER SAUVEGARDE inchangee (les octets UTF-8 originaux
+| restent exactement ceux inseres, voir save-file cote core.tal) --
+| seul l'AFFICHAGE perd l'accent.
+|
+| Limite assumee : le word-wrap et le positionnement du curseur (voir
+| core.tal) restent bases sur un COMPTAGE D'OCTETS, pas de glyphes
+| affiches -- une paire reconnue occupe 2 octets mais UNE SEULE colonne
+| a l'ecran, donc le curseur/remplissage de fin de rangee peuvent se
+| decaler d'une colonne apres un accent affiche sur la meme rangee.
+| Purement cosmetique (jamais de plantage/désynchronisation du tampon
+| lui-meme) -- corriger ca demanderait de rendre tout le moteur de
+| wrap UTF-8-aware, un chantier plus large que ce correctif cible. )
+
+( ( pos* -- byte* consumed* ) : decide QUOI dessiner a la position pos
+| du tampon et de COMBIEN d'octets avancer. Ne dessine rien lui-meme
+| (reste dans le style "une routine, une responsabilite" du reste de ce
+| fichier/core.tal) -- voir l'appelant, gfx-render. Ne regarde JAMAIS
+| au-dela de gfx-rowend (fige par l'appelant avant la boucle de
+| caracteres) : une paire coupee par un retour a la ligne enroule
+| retombe simplement sur le chemin normal (affichee comme 2 espaces),
+| jamais de lecture hors de la rangee affichee. gfx-b1/gfx-b2 = scratch
+| prive. )
+@gfx-utf8-decode ( pos* -- byte* consumed* )
+    DUP2 ;wd-buf ADD2 LDA .gfx-b1 STZ
+
+    .gfx-b1 LDZ #c3 NEQ #00 EQU ?{ !&plain }
+
+    DUP2 #0001 ADD2 .gfx-rowend LDZ2 LTH2 #00 EQU ?{ !&check-b2 }
+    !&plain
+
+    &check-b2
+    DUP2 #0001 ADD2 ;wd-buf ADD2 LDA .gfx-b2 STZ
+
+    .gfx-b2 LDZ #80 LTH #00 EQU ?{ !&plain }
+    .gfx-b2 LDZ #c0 LTH #00 EQU ?{ !&have-cont }
+    !&plain
+
+    &have-cont
+    POP2
+    .gfx-b2 LDZ utf8-fr-fallback
+    #0002
+JMP2r
+
+    &plain
+    POP2
+    .gfx-b1 LDZ
+    #0001
+JMP2r
+
+( ( cont-byte -- ascii ) : octet de continuation UTF-8 (0x80-0xbf, deja
+| valide par l'appelant) d'une paire menee par 0xc3 -> lettre latin-1
+| correspondante (0xc0-0xff) SANS accent, ou '?' (0x3f) pour les
+| quelques codepoints du bloc latin-1 qui ne sont pas des lettres --
+| non pertinents pour le francais, voir la table ci-dessous. Table
+| indexee directement par (cont-byte AND 0x3f), qui vaut exactement
+| (codepoint - 0xc0) pour un lead 0xc3 -- pas besoin de reconstruire le
+| codepoint complet.
+|
+| ATTENTION accents dans les COMMENTAIRES .tal eux-memes : uxnasm lit
+| `char` comme SIGNE (voir walkcomment dans uxn/src/uxnasm.c) -- tout
+| octet >=0x80 (donc chaque octet d'un caractere UTF-8 multi-octets) y
+| devient une valeur NEGATIVE, et `c <= 0x20` le traite alors comme un
+| ESPACE. Une parenthese collee a un caractere accentue (sans espace
+| entre les deux) se retrouve donc traitee comme un token BARE isole,
+| faussant le compteur de profondeur des commentaires et cassant
+| l'assemblage avec "Comment incomplete" -- bug reel rencontre en
+| ecrivant ce fichier. Regle retenue : jamais de caractere non-ASCII
+| colle a une parenthese dans un commentaire .tal, ici ou ailleurs. )
+@utf8-fr-fallback ( cont-byte -- ascii )
+    #3f AND #00 SWP ;utf8-fr-table ADD2 LDA
+JMP2r
+
+( index 0x00-0x3f = codepoint 0xc0-0xff, 16 par ligne )
+@utf8-fr-table
+    41 41 41 41 41 41 3f 43 45 45 45 45 49 49 49 49
+    3f 4e 4f 4f 4f 4f 4f 3f 4f 55 55 55 55 59 3f 3f
+    61 61 61 61 61 61 3f 63 65 65 65 65 69 69 69 69
+    3f 6e 6f 6f 6f 6f 6f 3f 6f 75 75 75 75 79 3f 79
 
 @draw-str ( str* color -- )
     STH
@@ -300,8 +457,9 @@ JMP2r
 
             &char-loop
                 .wd-tmp1 LDZ2 .gfx-rowend LDZ2 LTH2 #00 EQU ?{
-                    .wd-tmp1 LDZ2 ;wd-buf ADD2 LDA .gfx-color LDZ draw-char
-                    .wd-tmp1 LDZ2 #0001 ADD2 .wd-tmp1 STZ2
+                    .wd-tmp1 LDZ2 gfx-utf8-decode .gfx-consumed STZ2
+                    .gfx-color LDZ draw-char
+                    .wd-tmp1 LDZ2 .gfx-consumed LDZ2 ADD2 .wd-tmp1 STZ2
                     !&char-loop }
 
             ( remplissage = (wd-cols - eff-margin-cols) - contenu ecrit
