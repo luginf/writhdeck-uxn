@@ -9,7 +9,7 @@
 | qui est propre a la sortie GRAPHIQUE : police bitmap (reprise telle
 | quelle de uxn/projects/examples/gui/terminal.tal, domaine public de
 | l'ecosysteme uxn de reference -- terminus01x02, 8x16 par glyphe,
-| ASCII imprimable 0x20-0x7d), dessin caractere/chaine/decimal via
+| VGA 8x16 avec Latin-1), dessin caractere/chaine/decimal via
 | Screen/sprite, dispatch Controller/button+key.
 |
 | DIFFERENCES CLAVIER PAR RAPPORT A LA CONSOLE (limitations du device
@@ -46,7 +46,19 @@
 | core.tal, a |0030). Demarre a |001c (pas |0020) pour laisser la place
 | aux 4 octets de gfx-b1/gfx-b2/gfx-consumed ci-dessous sans deborder
 | dans la plage partagee |0030 -- voir gfx-utf8-decode. )
-|001c
+|0000
+@gfx-dcol        $1  ( draw-dec : couleur )
+@gfx-w          $2  ( gfx-parse-size : largeur demandee en pixels )
+@gfx-h          $2  ( gfx-parse-size : hauteur demandee )
+@gfx-pi         $1  ( gfx-parse-size : index dans wd-arg2 )
+@gfx-pc         $1  ( gfx-parse-size : octet courant )
+@gfx-pos        $2  ( gfx-utf8-decode : position du tampon decodee )
+@gfx-b3         $1  ( gfx-utf8-decode : 3e octet, 0 si hors rangee )
+@gfx-code       $1  ( gfx-utf8-decode : code de glyphe reconnu, 0 sinon )
+@gfx-len        $1  ( gfx-utf8-decode : octets consommes )
+@gfx-cp         $2  ( gfx-cells : curseur de parcours )
+@gfx-cend       $2  ( gfx-cells : borne de fin )
+@gfx-cn         $2  ( gfx-cells : compteur de cellules )
 @gfx-b1         $1  ( gfx-utf8-decode : premier octet lu, scratch prive )
 @gfx-b2         $1  ( gfx-utf8-decode : octet de continuation UTF-8, scratch prive )
 @gfx-consumed   $2  ( gfx-render : nombre d'octets du tampon consommes par
@@ -77,18 +89,36 @@
                     | possibles (on-argv si un fichier a ete donne,
                     | on-first-frame sinon) -- voir on-first-frame )
 
+|00c0
+@gfx-dark       $1  ( 1 = fond noir, 0 = fond blanc, Ctrl+D bascule )
+@gfx-toc        $1  ( 1 = ecran table des matieres affiche )
+@gfx-tsel       $2  ( TOC : index du titre selectionne )
+@gfx-tcnt       $2  ( TOC : nombre de titres )
+@gfx-tn         $2  ( gfx-toc-nth : index cherche )
+@gfx-tp         $2  ( TOC : position de parcours du tampon )
+@gfx-ti         $2  ( TOC : compteur de titres )
+@gfx-tpos       $2  ( gfx-toc-nth : debut de ligne du titre trouve )
+@gfx-tq         $2  ( gfx-is-heading : scratch )
+@gfx-ts         $2  ( gfx-toc-bounds : debut du texte du titre )
+@gfx-te         $2  ( gfx-toc-bounds : fin du texte du titre )
+@gfx-tlv        $1  ( gfx-toc-bounds : niveau du titre )
+@gfx-tb         $1  ( TOC : octet courant )
+@gfx-tind       $1  ( TOC : indentation en colonnes )
+@gfx-tcol       $1  ( TOC : couleur de l entree )
+@gfx-tvis       $2  ( TOC : nombre de rangees d entrees )
+@gfx-ttop       $2  ( TOC : premier titre affiche )
+@gfx-tk         $2  ( TOC : rangee d entree en cours )
+@gfx-tidx       $2  ( TOC : index du titre dessine )
+@gfx-trow       $2  ( TOC : rangee ecran de l entree )
+@gfx-tcur       $2  ( TOC : curseur de dessin du texte )
+
 |0100
 
 @on-reset ( -> )
     ;gfx-meta .System/metadata DEO2
-    ( theme : 4 couleurs, un octet par canal (R/G/B), un nibble par
-    | couleur (0=fond, 1=texte normal, 2=titre, 3=curseur) -- meme
-    | idiome que uxn/projects/examples/gui/terminal.tal, valeurs
-    | choisies pour ce portage : fond noir, texte blanc, titre rouge,
-    | curseur jaune. )
-    #0fff .System/r DEO2
-    #0f0f .System/g DEO2
-    #0f00 .System/b DEO2
+    #01 .gfx-dark STZ
+    #00 .gfx-toc STZ
+    gfx-apply-theme
     ( AUTO Y+ADDR : chaque Screen/sprite DEO avance l'adresse ET fait
     | descendre y de 8px -- draw-char en ecrit deux (DEOk puis DEO) pour
     | assembler les deux moities de 8 octets d'un glyphe 8x16, meme
@@ -127,6 +157,21 @@ BRK
 | interesse ici (les touches arrivent par Controller, pas Console). )
 @entry-finish-boot ( -- )
     #01 .gfx-booted STZ
+    ( taille par defaut 960x576 = 120x36 cellules, remplacee par le 2e
+    | argument LARGEURxHAUTEUR s'il est valide, arrondie a 8 et 16 )
+    #03c0 .Screen/width DEO2
+    #0240 .Screen/height DEO2
+    gfx-parse-size
+    gfx-parse-light ?{ !&dark-ok }
+    #00 .gfx-dark STZ
+    gfx-apply-theme
+    &dark-ok
+    .gfx-w LDZ2 #00ff GTH2 #00 EQU ?{
+        .gfx-w LDZ2 #0801 LTH2 #00 EQU ?{
+            .gfx-h LDZ2 #007f GTH2 #00 EQU ?{
+                .gfx-h LDZ2 #0601 LTH2 #00 EQU ?{
+                    .gfx-w LDZ2 #fff8 AND2 .Screen/width DEO2
+                    .gfx-h LDZ2 #fff0 AND2 .Screen/height DEO2 } } } }
     .Screen/width DEI2 x8-inv .wd-cols STZ2
     .Screen/height DEI2 x16-inv .wd-rows STZ2
     #0000 .Console/vector DEO2
@@ -136,6 +181,28 @@ JMP2r
 
 ( division par 8/16 (inverse de x8/x16 ci-dessus) -- SFT2 avec le
 | nibble de decalage a DROITE cette fois (decalage a gauche=0). )
+( lit "LARGEURxHAUTEUR" dans wd-arg2 : gfx-w/gfx-h restent a 0 si absent
+| ou mal forme. )
+@gfx-parse-size ( -- )
+    #0000 .gfx-w STZ2
+    #0000 .gfx-h STZ2
+    #01 .gfx-pi STZ
+    &wloop
+        ;wd-arg2 #00 .gfx-pi LDZ ADD2 LDA .gfx-pc STZ
+        .gfx-pc LDZ #30 SUB #0a LTH #00 EQU ?{
+            .gfx-w LDZ2 #000a MUL2 #00 .gfx-pc LDZ #30 SUB ADD2 .gfx-w STZ2
+            .gfx-pi LDZ INC .gfx-pi STZ
+            !&wloop }
+    .gfx-pc LDZ #78 EQU ?{ #0000 .gfx-w STZ2 JMP2r }
+    .gfx-pi LDZ INC .gfx-pi STZ
+    &hloop
+        ;wd-arg2 #00 .gfx-pi LDZ ADD2 LDA .gfx-pc STZ
+        .gfx-pc LDZ #30 SUB #0a LTH #00 EQU ?{
+            .gfx-h LDZ2 #000a MUL2 #00 .gfx-pc LDZ #30 SUB ADD2 .gfx-h STZ2
+            .gfx-pi LDZ INC .gfx-pi STZ
+            !&hloop }
+JMP2r
+
 @x8-inv ( px* -- n* ) #03 SFT2 JMP2r
 @x16-inv ( px* -- n* ) #04 SFT2 JMP2r
 
@@ -167,8 +234,8 @@ JMP2r
 | frappe). )
 @on-first-frame ( -- )
     #0000 .Screen/vector DEO2
-    .gfx-booted LDZ #00 NEQ #00 EQU ?{ core-boot }
-JMP2r
+    .gfx-booted LDZ #00 NEQ ?{ core-boot }
+BRK
 
 ( --- boucle interactive ---
 | Controller/key est un PULSE auto-remis a zero par la VM des que ce
@@ -185,6 +252,7 @@ JMP2r
 | consequence (appuyer sur Ctrl PENDANT qu'une fleche est deja
 | maintenue peut redeclencher un mouvement pour cet appel-la). )
 @on-button ( -> )
+    .gfx-toc LDZ #00 EQU ?{ !gfx-on-toc }
     .Controller/button DEI .wd-tmp1 STZ ( wd-tmp1 BAS OCTET = bouton --
                                         | STZ, pas STZ2 : DEI ne pousse
                                         | qu'un octet, STZ2 en depilerait
@@ -210,7 +278,9 @@ JMP2r
     .wd-tmp1 LDZ #01 AND #00 EQU #00 EQU ?{ !&plain }
     DUP #71 EQU #00 EQU ?{ POP quit BRK }               ( Ctrl+Q )
     DUP #73 EQU #00 EQU ?{ POP save-file gfx-render BRK } ( Ctrl+S )
-    DUP #65 EQU #00 EQU ?{ POP move-end after-move BRK }  ( Ctrl+E : Fin, voir note en tete )
+    DUP #65 EQU #00 EQU ?{ POP move-end after-move BRK }
+    DUP #74 EQU #00 EQU ?{ POP gfx-toc-open BRK }               ( Ctrl+T : table des matieres )
+    DUP #64 EQU #00 EQU ?{ POP gfx-toggle-theme BRK }           ( Ctrl+D : clair/sombre )  ( Ctrl+E : Fin, voir note en tete )
 
     &plain
     DUP #20 LTH #00 EQU ?{ POP BRK }
@@ -237,126 +307,320 @@ JMP2r
     gfx-render
 JMP2r
 
+@gfx-apply-theme ( -- )
+    .gfx-dark LDZ ?{ !&light }
+    #0fff .System/r DEO2
+    #0f0f .System/g DEO2
+    #0f00 .System/b DEO2
+JMP2r
+    &light
+    ( 0 fond blanc, 1 texte noir, 2 titre rouge sombre, 3 curseur bleu )
+    #f0b0 .System/r DEO2
+    #f000 .System/g DEO2
+    #f00d .System/b DEO2
+JMP2r
+
+@gfx-toggle-theme ( -- )
+    .gfx-dark LDZ #01 EOR .gfx-dark STZ
+    gfx-apply-theme
+    gfx-render
+JMP2r
+
+( 1 si "light" figure dans le 2e argument, voir gfx-parse-size )
+@gfx-parse-light ( -- flag )
+    #01 .gfx-pi STZ
+    &loop
+        .gfx-pi LDZ ;wd-arg2 LDA GTH #00 EQU ?{ #00 JMP2r }
+        ;wd-arg2 #00 .gfx-pi LDZ ADD2 LDA #6c EQU #00 EQU ?{ #01 JMP2r }
+        .gfx-pi LDZ INC .gfx-pi STZ
+        !&loop
+
+( --- table des matieres (Ctrl+T) ---
+| Meme idee que F11 dans writhdeck.tcl/writhdeck-c : ecran plein cadre
+| listant les titres, indentes par niveau, Haut/Bas pour choisir,
+| Entree saute au titre, Echap ou Ctrl+T annule. F11 est pris par
+| l emulateur (plein ecran) et le Controller d uxn ne transmet de toute
+| facon aucune touche de fonction. Les titres sont ceux reconnus pour la
+| coloration, txt2tags = et markdown #. )
+@gfx-is-space ( b -- flag )
+    DUP #20 EQU SWP #09 EQU ORA
+JMP2r
+
+@gfx-is-mark ( b -- flag )
+    DUP #3d EQU SWP #23 EQU ORA
+JMP2r
+
+@gfx-is-heading ( start* -- flag )
+    .gfx-tq STZ2
+    .gfx-tq LDZ2 is-heading
+    .gfx-tq LDZ2 is-heading-t2t
+    ORA
+JMP2r
+
+@gfx-toc-count ( -- n* )
+    #0000 .gfx-tp STZ2
+    #0000 .gfx-ti STZ2
+    &loop
+        .gfx-tp LDZ2 .wd-buflen LDZ2 LTH2 ?{ .gfx-ti LDZ2 JMP2r }
+        .gfx-tp LDZ2 gfx-is-heading ?{ !&next }
+        .gfx-ti LDZ2 INC2 .gfx-ti STZ2
+        &next
+        .gfx-tp LDZ2 line-end INC2 .gfx-tp STZ2
+        !&loop
+
+( n* -- flag : cherche le n-ieme titre, son debut de ligne va dans gfx-tpos )
+@gfx-toc-nth
+    .gfx-tn STZ2
+    #0000 .gfx-tp STZ2
+    #0000 .gfx-ti STZ2
+    &loop
+        .gfx-tp LDZ2 .wd-buflen LDZ2 LTH2 ?{ #00 JMP2r }
+        .gfx-tp LDZ2 gfx-is-heading ?{ !&next }
+        .gfx-ti LDZ2 .gfx-tn LDZ2 EQU2 ?{ !&inc }
+        .gfx-tp LDZ2 .gfx-tpos STZ2
+        #01 JMP2r
+        &inc
+        .gfx-ti LDZ2 INC2 .gfx-ti STZ2
+        &next
+        .gfx-tp LDZ2 line-end INC2 .gfx-tp STZ2
+        !&loop
+
+( selection initiale : dernier titre dont la ligne commence avant le curseur )
+@gfx-toc-init-sel ( -- )
+    #0000 .gfx-tsel STZ2
+    #0000 .gfx-tp STZ2
+    #0000 .gfx-ti STZ2
+    &loop
+        .gfx-tp LDZ2 .wd-buflen LDZ2 LTH2 ?{ JMP2r }
+        .wd-cursor LDZ2 .gfx-tp LDZ2 LTH2 #00 EQU ?{ JMP2r }
+        .gfx-tp LDZ2 gfx-is-heading ?{ !&next }
+        .gfx-ti LDZ2 .gfx-tsel STZ2
+        .gfx-ti LDZ2 INC2 .gfx-ti STZ2
+        &next
+        .gfx-tp LDZ2 line-end INC2 .gfx-tp STZ2
+        !&loop
+
+( start* -- : gfx-ts/gfx-te = texte du titre sans marqueurs ni blancs, gfx-tlv = niveau )
+@gfx-toc-bounds
+    DUP2 .gfx-ts STZ2
+    line-end .gfx-te STZ2
+    #00 .gfx-tlv STZ
+    &skip
+        .gfx-ts LDZ2 .gfx-te LDZ2 LTH2 ?{ !&trim }
+        .gfx-ts LDZ2 ;wd-buf ADD2 LDA .gfx-tb STZ
+        .gfx-tb LDZ gfx-is-space #00 EQU ?{ .gfx-ts LDZ2 INC2 .gfx-ts STZ2 !&skip }
+        .gfx-tb LDZ gfx-is-mark #00 EQU ?{
+            .gfx-ts LDZ2 INC2 .gfx-ts STZ2
+            .gfx-tlv LDZ INC .gfx-tlv STZ
+            !&skip }
+    &trim
+        .gfx-te LDZ2 .gfx-ts LDZ2 GTH2 ?{ JMP2r }
+        .gfx-te LDZ2 #0001 SUB2 ;wd-buf ADD2 LDA .gfx-tb STZ
+        .gfx-tb LDZ gfx-is-space #00 EQU ?{ .gfx-te LDZ2 #0001 SUB2 .gfx-te STZ2 !&trim }
+        .gfx-tb LDZ #3d EQU #00 EQU ?{ .gfx-te LDZ2 #0001 SUB2 .gfx-te STZ2 !&trim }
+JMP2r
+
+@gfx-toc-open ( -- )
+    gfx-toc-count .gfx-tcnt STZ2
+    .gfx-tcnt LDZ2 #0000 EQU2 ?{
+        #01 .gfx-toc STZ
+        gfx-toc-init-sel
+        gfx-toc-render }
+JMP2r
+
+@gfx-toc-close ( -- )
+    #00 .gfx-toc STZ
+    clamp-scroll
+    gfx-render
+JMP2r
+
+@gfx-toc-up ( -- )
+    .gfx-tsel LDZ2 #0000 EQU2 ?{ .gfx-tsel LDZ2 #0001 SUB2 .gfx-tsel STZ2 }
+    gfx-toc-render
+JMP2r
+
+@gfx-toc-down ( -- )
+    .gfx-tsel LDZ2 INC2 .gfx-tcnt LDZ2 LTH2 #00 EQU ?{ .gfx-tsel LDZ2 INC2 .gfx-tsel STZ2 }
+    gfx-toc-render
+JMP2r
+
+@gfx-toc-go ( -- )
+    .gfx-tsel LDZ2 gfx-toc-nth ?{ gfx-toc-close JMP2r }
+    .gfx-tpos LDZ2 .wd-cursor STZ2
+    gfx-toc-close
+JMP2r
+
+( vecteur clavier pendant la TOC, atteint par saut depuis on-button )
+@gfx-on-toc ( -> )
+    .Controller/key DEI .gfx-tb STZ
+    .gfx-tb LDZ #00 EQU #00 EQU ?{
+        .Controller/button DEI #10 AND #00 NEQ #00 EQU ?{ gfx-toc-up BRK }
+        .Controller/button DEI #20 AND #00 NEQ #00 EQU ?{ gfx-toc-down BRK }
+        BRK }
+    .gfx-tb LDZ #0d EQU #00 EQU ?{ gfx-toc-go BRK }
+    .gfx-tb LDZ #0a EQU #00 EQU ?{ gfx-toc-go BRK }
+    .gfx-tb LDZ #1b EQU #00 EQU ?{ gfx-toc-close BRK }
+    .Controller/button DEI #01 AND #00 NEQ #00 EQU ?{
+        .gfx-tb LDZ #74 EQU #00 EQU ?{ gfx-toc-close BRK } }
+BRK
+
+@gfx-toc-render ( -- )
+    #0000 gfx-blank-row
+    #0008 .Screen/x DEO2
+    ;toc-title #02 draw-str
+    #0001 gfx-blank-row
+    .wd-rows LDZ2 #0003 SUB2 .gfx-tvis STZ2
+    #0000 .gfx-ttop STZ2
+    .gfx-tsel LDZ2 .gfx-tvis LDZ2 LTH2 ?{
+        .gfx-tsel LDZ2 .gfx-tvis LDZ2 SUB2 INC2 .gfx-ttop STZ2 }
+    #0000 .gfx-tk STZ2
+    &rows
+        .gfx-tk LDZ2 .gfx-tvis LDZ2 LTH2 #00 EQU ?{
+            .gfx-tk LDZ2 #0002 ADD2 .gfx-trow STZ2
+            .gfx-trow LDZ2 gfx-blank-row
+            .gfx-ttop LDZ2 .gfx-tk LDZ2 ADD2 .gfx-tidx STZ2
+            .gfx-tidx LDZ2 .gfx-tcnt LDZ2 LTH2 #00 EQU ?{ gfx-toc-entry }
+            .gfx-tk LDZ2 INC2 .gfx-tk STZ2
+            !&rows }
+    .wd-rows LDZ2 #0001 SUB2 gfx-blank-row
+    #0008 .Screen/x DEO2
+    ;toc-help #01 draw-str
+JMP2r
+
+( dessine le titre numero gfx-tidx sur la rangee gfx-trow )
+@gfx-toc-entry ( -- )
+    .gfx-tidx LDZ2 gfx-toc-nth ?{ JMP2r }
+    .gfx-tpos LDZ2 gfx-toc-bounds
+    #01 .gfx-tcol STZ
+    .gfx-tidx LDZ2 .gfx-tsel LDZ2 EQU2 #00 EQU ?{
+        #03 .gfx-tcol STZ
+        #0008 .Screen/x DEO2
+        .gfx-trow LDZ2 x16 .Screen/y DEO2
+        #3e #03 draw-char }
+    #00 .gfx-tind STZ
+    .gfx-tlv LDZ #01 LTH ?{ .gfx-tlv LDZ #01 SUB #10 SFT .gfx-tind STZ }
+    #00 .gfx-tind LDZ #03 ADD x8 .Screen/x DEO2
+    .gfx-trow LDZ2 x16 .Screen/y DEO2
+    .gfx-te LDZ2 .gfx-rowend STZ2
+    .gfx-ts LDZ2 .gfx-tcur STZ2
+    &cl
+        .gfx-tcur LDZ2 .gfx-te LDZ2 LTH2 #00 EQU ?{
+            .Screen/x DEI2 .wd-cols LDZ2 #0001 SUB2 x8 LTH2 #00 EQU ?{
+                .gfx-tcur LDZ2 gfx-utf8-decode .gfx-consumed STZ2
+                .gfx-tcol LDZ draw-char
+                .gfx-tcur LDZ2 .gfx-consumed LDZ2 ADD2 .gfx-tcur STZ2
+                !&cl } }
+JMP2r
+
+@toc-title "Table 20 "of 20 "contents 00
+@toc-help "Up/Down: 20 "select 20 "-- 20 "Enter: 20 "go 20 "-- 20 "Esc: 20 "back 00
+
 @quit ( -- )
     #80 .System/state DEO
 BRK
 
 ( --- police + dessin de texte ---
-| Police terminus01x02 (8x16, ASCII imprimable 0x20 a 0x7d) : copiee
-| telle quelle depuis uxn/projects/examples/gui/terminal.tal --
-| domaine public de l'ecosysteme uxn de reference, deja utilisee comme
-| reference pour le bootstrap console de ce portage (kibi.tal) plus
-| tot dans ce projet. )
+| Police VGA 8x16 extraite de Uni2-VGA16.psf Linux : ASCII, Latin-1
+| complet et quelques signes typographiques, voir gfx-font tout en bas.
+| Les octets de controle 0x00-0x1f sont dessines comme un espace. )
 @draw-char ( char color -- )
     SWP
-    ( clampe tout octet hors [0x20,0x7d] a l'espace -- evite de lire
-    | au-dela de la table pour les octets de controle, DEL, ou les
-    | octets de tete/continuation UTF-8 (0x80-0xff) qui n'ont pas ete
-    | reconnus par gfx-utf8-decode (voir plus bas) comme une paire
-    | accentuee latin-1 -- cette police n'a de toute facon aucun
-    | glyphe ACCENTUE, un tel octet s'affiche donc comme un espace
-    | plutot que comme un caractere -- perte de fidelite visuelle
-    | reelle par rapport a la console (qui delegue tout le decodage
-    | UTF-8 au terminal hote), voir README. )
     DUP #20 LTH #00 EQU ?{ POP #20 }
-    DUP #7d GTH #00 EQU ?{ POP #20 }
     [ #20 SUB #00 SWP #40 SFT2 ;gfx-font ADD2 ] .Screen/addr DEO2
     .Screen/sprite DEOk DEO
     .Screen/y DEI2 #0010 SUB2 .Screen/y DEO2
     .Screen/x DEI2 #0008 ADD2 .Screen/x DEO2
 JMP2r
 
-( --- accents latin-1 (UTF-8 2 octets) ---
-| La police terminus01x02 n'a AUCUN glyphe accentue (voir draw-char) --
-| plutot que d'afficher les lettres françaises accentuees comme des
-| espaces invisibles (ce qui donnait l'impression a l'utilisateur de ne
-| "pas pouvoir taper d'accent", alors que l'octet ETAIT bien insere dans
-| le tampon -- voir on-button/insert-byte, inchange), on reconnait ici
-| la forme UTF-8 a 2 octets du bloc Latin-1 Supplement (lead 0xc3,
-| continuation 0x80-0xbf -- couvre TOUTES les lettres accentuees
-| francaises usuelles : à â ä ç è é ê ë î ï ô ù û ü ÿ et leurs
-| majuscules) et on affiche a la place la lettre de base SANS accent
-| (ex. 'é' -> 'e') en reutilisant un glyphe DEJA existant de la police --
-| aucun nouveau dessin de pixels, donc rien qui ait besoin d'etre
-| verifie a l'oeil au-dela de ce qui l'est deja pour l'alphabet ASCII.
-| Fidelite du FICHIER SAUVEGARDE inchangee (les octets UTF-8 originaux
-| restent exactement ceux inseres, voir save-file cote core.tal) --
-| seul l'AFFICHAGE perd l'accent.
+( --- UTF-8 vers glyphes ---
+| La police est la table gfx-font ci-dessous : VGA 8x16, un glyphe par
+| code de 0x20 a 0xff, le code etant un octet. 0x20-0x7e = ASCII,
+| 0xa0-0xff = Latin-1 identique a Unicode, 0x80-0x88 = extras :
+| 80 apostrophe typographique, 81 points de suspension, 82 tiret demi-
+| cadratin, 83 tiret cadratin, 84 et 85 guillemets anglais, 86 oe,
+| 87 OE, 88 euro. Les accents sont donc dessines pour de bon.
 |
-| Limite assumee : le word-wrap et le positionnement du curseur (voir
-| core.tal) restent bases sur un COMPTAGE D'OCTETS, pas de glyphes
-| affiches -- une paire reconnue occupe 2 octets mais UNE SEULE colonne
-| a l'ecran, donc le curseur/remplissage de fin de rangee peuvent se
-| decaler d'une colonne apres un accent affiche sur la meme rangee.
-| Purement cosmetique (jamais de plantage/désynchronisation du tampon
-| lui-meme) -- corriger ca demanderait de rendre tout le moteur de
-| wrap UTF-8-aware, un chantier plus large que ce correctif cible. )
-
-( ( pos* -- byte* consumed* ) : decide QUOI dessiner a la position pos
-| du tampon et de COMBIEN d'octets avancer. Ne dessine rien lui-meme
-| (reste dans le style "une routine, une responsabilite" du reste de ce
-| fichier/core.tal) -- voir l'appelant, gfx-render. Ne regarde JAMAIS
-| au-dela de gfx-rowend (fige par l'appelant avant la boucle de
-| caracteres) : une paire coupee par un retour a la ligne enroule
-| retombe simplement sur le chemin normal (affichee comme 2 espaces),
-| jamais de lecture hors de la rangee affichee. gfx-b1/gfx-b2 = scratch
-| prive. )
-@gfx-utf8-decode ( pos* -- byte* consumed* )
-    DUP2 ;wd-buf ADD2 LDA .gfx-b1 STZ
-
-    .gfx-b1 LDZ #c3 NEQ #00 EQU ?{ !&plain }
-
-    DUP2 #0001 ADD2 .gfx-rowend LDZ2 LTH2 #00 EQU ?{ !&check-b2 }
-    !&plain
-
-    &check-b2
-    DUP2 #0001 ADD2 ;wd-buf ADD2 LDA .gfx-b2 STZ
-
-    .gfx-b2 LDZ #80 LTH #00 EQU ?{ !&plain }
-    .gfx-b2 LDZ #c0 LTH #00 EQU ?{ !&have-cont }
-    !&plain
-
-    &have-cont
-    POP2
-    .gfx-b2 LDZ utf8-fr-fallback
-    #0002
-JMP2r
-
-    &plain
-    POP2
-    .gfx-b1 LDZ
-    #0001
-JMP2r
-
-( ( cont-byte -- ascii ) : octet de continuation UTF-8 (0x80-0xbf, deja
-| valide par l'appelant) d'une paire menee par 0xc3 -> lettre latin-1
-| correspondante (0xc0-0xff) SANS accent, ou '?' (0x3f) pour les
-| quelques codepoints du bloc latin-1 qui ne sont pas des lettres --
-| non pertinents pour le francais, voir la table ci-dessous. Table
-| indexee directement par (cont-byte AND 0x3f), qui vaut exactement
-| (codepoint - 0xc0) pour un lead 0xc3 -- pas besoin de reconstruire le
-| codepoint complet.
+| gfx-utf8-decode transforme la sequence UTF-8 a pos en un code de
+| glyphe plus le nombre d octets consommes. Une sequence inconnue
+| devient un seul point d interrogation, quelle que soit sa longueur.
+| Ne lit jamais au-dela de gfx-rowend, une sequence coupee par le
+| retour a la ligne est alors traitee comme inconnue.
 |
-| ATTENTION accents dans les COMMENTAIRES .tal eux-memes : uxnasm lit
-| `char` comme SIGNE (voir walkcomment dans uxn/src/uxnasm.c) -- tout
-| octet >=0x80 (donc chaque octet d'un caractere UTF-8 multi-octets) y
-| devient une valeur NEGATIVE, et `c <= 0x20` le traite alors comme un
-| ESPACE. Une parenthese collee a un caractere accentue (sans espace
-| entre les deux) se retrouve donc traitee comme un token BARE isole,
-| faussant le compteur de profondeur des commentaires et cassant
-| l'assemblage avec "Comment incomplete" -- bug reel rencontre en
-| ecrivant ce fichier. Regle retenue : jamais de caractere non-ASCII
-| colle a une parenthese dans un commentaire .tal, ici ou ailleurs. )
-@utf8-fr-fallback ( cont-byte -- ascii )
-    #3f AND #00 SWP ;utf8-fr-table ADD2 LDA
+| Le word-wrap de core.tal compte toujours des OCTETS : une ligne
+| contenant des accents s affiche donc un peu plus courte que la
+| largeur disponible. Purement cosmetique. )
+@gfx-utf8-decode ( pos* -- code consumed* )
+    .gfx-pos STZ2
+    .gfx-pos LDZ2 ;wd-buf ADD2 LDA .gfx-b1 STZ
+    .gfx-b1 LDZ #80 LTH #00 EQU ?{ .gfx-b1 LDZ #0001 JMP2r }
+
+    #00 .gfx-code STZ
+    #01 .gfx-len STZ
+    #00 .gfx-b2 STZ
+    #00 .gfx-b3 STZ
+    .gfx-pos LDZ2 #0001 ADD2 .gfx-rowend LDZ2 LTH2 #00 EQU ?{
+        .gfx-pos LDZ2 #0001 ADD2 ;wd-buf ADD2 LDA .gfx-b2 STZ }
+    .gfx-pos LDZ2 #0002 ADD2 .gfx-rowend LDZ2 LTH2 #00 EQU ?{
+        .gfx-pos LDZ2 #0002 ADD2 ;wd-buf ADD2 LDA .gfx-b3 STZ }
+
+    ( c3 xx : Latin-1 0xc0-0xff )
+    .gfx-b1 LDZ #c3 EQU #00 EQU ?{
+        .gfx-b2 LDZ #80 SUB #40 LTH #00 EQU ?{
+            .gfx-b2 LDZ #40 ADD .gfx-code STZ
+            #02 .gfx-len STZ } }
+    ( c2 xx : Latin-1 0xa0-0xbf )
+    .gfx-b1 LDZ #c2 EQU #00 EQU ?{
+        .gfx-b2 LDZ #a0 SUB #20 LTH #00 EQU ?{
+            .gfx-b2 LDZ .gfx-code STZ
+            #02 .gfx-len STZ } }
+    ( c5 93 oe et c5 92 OE )
+    .gfx-b1 LDZ #c5 EQU #00 EQU ?{
+        .gfx-b2 LDZ #93 EQU #00 EQU ?{ #86 .gfx-code STZ #02 .gfx-len STZ }
+        .gfx-b2 LDZ #92 EQU #00 EQU ?{ #87 .gfx-code STZ #02 .gfx-len STZ } }
+    ( e2 80 xx : ponctuation typographique )
+    .gfx-b1 LDZ #e2 EQU #00 EQU ?{
+        .gfx-b2 LDZ #80 EQU #00 EQU ?{
+            #99 #80 gfx-try3
+            #a6 #81 gfx-try3
+            #93 #82 gfx-try3
+            #94 #83 gfx-try3
+            #9c #84 gfx-try3
+            #9d #85 gfx-try3 }
+        ( e2 82 ac : euro )
+        .gfx-b2 LDZ #82 EQU #00 EQU ?{ #ac #88 gfx-try3 } }
+
+    .gfx-len LDZ #01 EQU ?{ .gfx-code LDZ #00 .gfx-len LDZ JMP2r }
+
+    ( inconnu : avale les octets de continuation qui suivent )
+    &skip
+        .gfx-pos LDZ2 #00 .gfx-len LDZ ADD2 .gfx-rowend LDZ2 LTH2 #00 EQU ?{
+            .gfx-pos LDZ2 #00 .gfx-len LDZ ADD2 ;wd-buf ADD2 LDA #80 SUB #40 LTH #00 EQU ?{
+                .gfx-len LDZ INC .gfx-len STZ
+                !&skip } }
+    #3f #00 .gfx-len LDZ
 JMP2r
 
-( index 0x00-0x3f = codepoint 0xc0-0xff, 16 par ligne )
-@utf8-fr-table
-    41 41 41 41 41 41 3f 43 45 45 45 45 49 49 49 49
-    3f 4e 4f 4f 4f 4f 4f 3f 4f 55 55 55 55 59 3f 3f
-    61 61 61 61 61 61 3f 63 65 65 65 65 69 69 69 69
-    3f 6e 6f 6f 6f 6f 6f 3f 6f 75 75 75 75 79 3f 79
+( want-b3 code -- : si le 3e octet vaut want-b3, fixe code et longueur 3. )
+@gfx-try3
+    SWP .gfx-b3 LDZ EQU #00 EQU ?{ .gfx-code STZ #03 .gfx-len STZ JMP2r }
+    POP
+JMP2r
+
+( from* to* -- n* : nombre de cellules ecran entre deux positions du
+| tampon, c est a dire les octets qui ne sont pas des octets de
+| continuation UTF-8 0x80-0xbf. )
+@gfx-cells
+    .gfx-cend STZ2
+    .gfx-cp STZ2
+    #0000 .gfx-cn STZ2
+    &loop
+        .gfx-cp LDZ2 .gfx-cend LDZ2 LTH2 #00 EQU ?{
+            .gfx-cp LDZ2 ;wd-buf ADD2 LDA #80 SUB #40 LTH ?{
+                .gfx-cn LDZ2 INC2 .gfx-cn STZ2 }
+            .gfx-cp LDZ2 INC2 .gfx-cp STZ2
+            !&loop }
+    .gfx-cn LDZ2
+JMP2r
 
 @draw-str ( str* color -- )
     STH
@@ -384,7 +648,10 @@ JMP2r
 | algorithme que wd-print-dec cote console, juste draw-char au lieu de
 | putc. gfx-dcount = scratch prive. )
 @draw-dec ( n* color -- )
-    STH
+    ( la couleur vit en zero-page, PAS sur la pile de retour : les chiffres
+    | y sont empiles, et STHkr aurait copie le chiffre suivant au lieu de la
+    | couleur -- sprite corrompu des que le nombre avait 2 chiffres. )
+    .gfx-dcol STZ
     DUP2 #0000 NEQ2 #00 EQU ?{
         #00 .gfx-dcount STZ
         &extract
@@ -400,12 +667,11 @@ JMP2r
         POP2
         &print
             .gfx-dcount LDZ #00 NEQ #00 EQU ?{
-                STHr STHkr draw-char
+                STHr .gfx-dcol LDZ draw-char
                 .gfx-dcount LDZ #01 SUB .gfx-dcount STZ
                 !&print }
-        POPr
         JMP2r }
-    POP2 #30 STHr draw-char
+    POP2 #30 .gfx-dcol LDZ draw-char
 JMP2r
 
 ( --- rendu --- une rangee vide (marges haut/bas) : wd-cols espaces en
@@ -465,8 +731,7 @@ JMP2r
             ( remplissage = (wd-cols - eff-margin-cols) - contenu ecrit
             | (gfx-rowend - gfx-rowstart) -- couvre a la fois le reste de
             | wd-text-width ET la marge droite, jusqu'au bord ECRAN. )
-            .wd-cols LDZ2 .wd-eff-margin-cols LDZ2 SUB2
-            .gfx-rowend LDZ2 .gfx-rowstart LDZ2 SUB2 SUB2 .gfx-pad STZ2
+            .wd-cols LDZ2 .Screen/x DEI2 #03 SFT2 SUB2 .gfx-pad STZ2
             .gfx-pad LDZ2 .gfx-color LDZ draw-spaces
 
             .gfx-rowend LDZ2 wrap-next-start .wd-tmp1 STZ2
@@ -485,6 +750,7 @@ JMP2r
 JMP2r
 
 @gfx-status-bar ( -- )
+    .wd-rows LDZ2 #0001 SUB2 gfx-blank-row   ( efface les restes de l'etat precedent )
     #0000 x8 .Screen/x DEO2
     .wd-rows LDZ2 #0001 SUB2 x16 .Screen/y DEO2
     .wd-fname-len LDZ #00 NEQ #00 EQU ?{ ;wd-fname #01 draw-str }
@@ -492,7 +758,7 @@ JMP2r
     ;status-sep #01 draw-str
     .wd-cursor LDZ2 line-start count-lines-from-zero #0001 ADD2 #01 draw-dec
     ;status-comma #01 draw-str
-    .wd-cursor LDZ2 .wd-cursor LDZ2 line-start SUB2 #0001 ADD2 #01 draw-dec
+    .wd-cursor LDZ2 line-start .wd-cursor LDZ2 gfx-cells #0001 ADD2 #01 draw-dec
     .wd-dirty LDZ #00 NEQ #00 EQU ?{ ;status-dirty #01 draw-str }
 JMP2r
 
@@ -502,16 +768,29 @@ JMP2r
 @gfx-draw-cursor ( -- )
     .wd-cursor LDZ2 visual-row-start .wd-tmp1 STZ2
     .wd-scroll LDZ2 .wd-tmp1 LDZ2 count-visual-rows .wd-tmp2 STZ2
-    .wd-cursor LDZ2 .wd-tmp1 LDZ2 SUB2 .wd-tmp3 STZ2
+    .wd-tmp1 LDZ2 .wd-cursor LDZ2 gfx-cells .wd-tmp3 STZ2
 
     .wd-tmp3 LDZ2 .wd-eff-margin-cols LDZ2 ADD2 x8 .Screen/x DEO2
     .wd-tmp2 LDZ2 .wd-text-top LDZ2 ADD2 x16 .Screen/y DEO2
 
     .wd-cursor LDZ2 .wd-buflen LDZ2 LTH2 #00 EQU ?{ !&have-char }
-    #20 #03 draw-char JMP2r
+    gfx-cursor-bar JMP2r
     &have-char
-    .wd-cursor LDZ2 ;wd-buf ADD2 LDA #03 draw-char
+    .wd-buflen LDZ2 .gfx-rowend STZ2
+    gfx-cursor-bar
+    .wd-cursor LDZ2 gfx-utf8-decode POP2 #05 draw-char
 JMP2r
+
+( barre verticale de 2 pixels sur toute la hauteur de la cellule, a la
+| cellule qui vient d'etre dessinee : visible meme sur un espace, une
+| fin de ligne ou une ligne vide, ou le glyphe seul ne montre rien. )
+@gfx-cursor-bar ( -- )
+    ;gfx-bar .Screen/addr DEO2
+    #03 .Screen/sprite DEOk DEO
+    .Screen/y DEI2 #0010 SUB2 .Screen/y DEO2
+JMP2r
+
+@gfx-bar c0 c0 c0 c0 c0 c0 c0 c0 c0 c0 c0 c0 c0 c0 c0 c0
 
 @draft-label "[draft] 00
 @status-sep 20 "-- 20 00
@@ -533,7 +812,7 @@ JMP2r
     1818 7cc6 c2c0 7c06 0686 c67c 1818 0000
     0000 0000 c2c6 0c18 3060 c686 0000 0000
     0000 386c 6c38 76dc cccc cc76 0000 0000
-    0030 3030 6000 0000 0000 0000 0000 0000
+    0030 3030 2000 0000 0000 0000 0000 0000
     0000 0c18 3030 3030 3030 180c 0000 0000
     0000 3018 0c0c 0c0c 0c0c 1830 0000 0000
     0000 0000 0066 3cff 3c66 0000 0000 0000
@@ -618,7 +897,137 @@ JMP2r
     0000 0000 00c6 c6c6 c6c6 c67e 060c f800
     0000 0000 00fe cc18 3060 c6fe 0000 0000
     0000 0e18 1818 7018 1818 180e 0000 0000
-    0000 1818 1818 0018 1818 1818 0000 0000
+    0000 1818 1818 1818 1818 1818 0000 0000
     0000 7018 1818 0e18 1818 1870 0000 0000
+    0000 76dc 0000 0000 0000 0000 0000 0000
+    0000 0000 0000 0000 0000 0000 0000 0000
+    0018 1818 3000 0000 0000 0000 0000 0000
+    0000 0000 0000 0000 0000 dbdb 0000 0000
+    0000 0000 0000 00fe 0000 0000 0000 0000
+    0000 0000 0000 00ff 0000 0000 0000 0000
+    0066 cccc cc00 0000 0000 0000 0000 0000
+    0066 6666 cc00 0000 0000 0000 0000 0000
+    0000 0000 006c d6d6 ded8 d86e 0000 0000
+    0000 6ed8 d8d8 ded8 d8d8 d86e 0000 0000
+    0000 1c36 60fc 60f8 6060 361c 0000 0000
+    0000 0000 0000 0000 0000 0000 0000 0000
+    0000 0000 0000 0000 0000 0000 0000 0000
+    0000 0000 0000 0000 0000 0000 0000 0000
+    0000 0000 0000 0000 0000 0000 0000 0000
+    0000 0000 0000 0000 0000 0000 0000 0000
+    0000 0000 0000 0000 0000 0000 0000 0000
+    0000 0000 0000 0000 0000 0000 0000 0000
+    0000 0000 0000 0000 0000 0000 0000 0000
+    0000 0000 0000 0000 0000 0000 0000 0000
+    0000 0000 0000 0000 0000 0000 0000 0000
+    0000 0000 0000 0000 0000 0000 0000 0000
+    0000 0000 0000 0000 0000 0000 0000 0000
+    0000 0000 0000 0000 0000 0000 0000 0000
+    0000 0000 0000 0000 0000 0000 0000 0000
+    0000 0000 0000 0000 0000 0000 0000 0000
+    0000 0000 0000 0000 0000 0000 0000 0000
+    0000 0000 0000 0000 0000 0000 0000 0000
+    0000 0000 0000 0000 0000 0000 0000 0000
+    0000 0000 0000 0000 0000 0000 0000 0000
+    0000 0000 0000 0000 0000 0000 0000 0000
+    0000 0000 0000 0000 0000 0000 0000 0000
+    0000 0000 0000 0000 0000 0000 0000 0000
+    0000 0000 0000 0000 0000 0000 0000 0000
+    0000 0000 0000 0000 0000 0000 0000 0000
+    0000 1818 0018 1818 3c3c 3c18 0000 0000
+    0018 183c 6660 6060 663c 1818 0000 0000
+    0038 6c64 60f0 6060 6060 e6fc 0000 0000
+    0000 0000 663c 6666 663c 6600 0000 0000
+    0000 6666 3c18 7e18 7e18 1818 0000 0000
+    0000 1818 1818 0018 1818 1818 0000 0000
+    007c c660 386c c6c6 6c38 0cc6 7c00 0000
+    0000 6c6c 0000 0000 0000 0000 0000 0000
+    0000 3c42 99a5 a1a1 a599 423c 0000 0000
+    003c 6c6c 3e00 7e00 0000 0000 0000 0000
+    0000 0000 0036 6cd8 6c36 0000 0000 0000
+    0000 0000 0000 fe06 0606 0600 0000 0000
+    0000 0000 0000 00fe 0000 0000 0000 0000
+    0000 3844 bab2 aa44 3800 0000 0000 0000
+    0000 007c 0000 0000 0000 0000 0000 0000
+    0038 6c6c 3800 0000 0000 0000 0000 0000
+    0000 0000 1818 7e18 1800 7e00 0000 0000
+    0070 d830 60c8 f800 0000 0000 0000 0000
+    0070 d830 18d8 7000 0000 0000 0000 0000
+    0000 0c18 0000 0000 0000 0000 0000 0000
+    0000 0000 00cc cccc cccc ccf6 c0c0 c000
+    0000 7fdb dbdb 7b1b 1b1b 1b1b 0000 0000
+    0000 0000 0000 0000 1800 0000 0000 0000
+    0000 0000 0000 0000 0000 0000 180c 3800
+    0030 7030 3030 7800 0000 0000 0000 0000
+    0038 6c6c 3800 7c00 0000 0000 0000 0000
+    0000 0000 00d8 6c36 6cd8 0000 0000 0000
+    00c0 c0c2 c6cc 1830 66ce 9e3e 0606 0000
+    00c0 c0c2 c6cc 1830 60dc 860c 183e 0000
+    00e0 3062 36ec 1830 66ce 9e3e 0606 0000
+    0000 3030 0030 3060 c0c6 c67c 0000 0000
+    6030 0010 386c c6c6 fec6 c6c6 0000 0000
+    0c18 0010 386c c6c6 fec6 c6c6 0000 0000
+    1038 6c10 386c c6c6 fec6 c6c6 0000 0000
+    76dc 0010 386c c6c6 fec6 c6c6 0000 0000
+    6c6c 0010 386c c6c6 fec6 c6c6 0000 0000
+    386c 3810 386c c6c6 fec6 c6c6 0000 0000
+    0000 3e6c cccc fecc cccc ccce 0000 0000
+    0000 3c66 c2c0 c0c0 c0c2 663c 180c 3800
+    3018 00fe 6662 6878 6862 66fe 0000 0000
+    0c18 00fe 6662 6878 6862 66fe 0000 0000
+    1038 44fe 6662 6878 6862 66fe 0000 0000
+    6c6c 00fe 6662 6878 6862 66fe 0000 0000
+    3018 003c 1818 1818 1818 183c 0000 0000
+    0c18 003c 1818 1818 1818 183c 0000 0000
+    183c 423c 1818 1818 1818 183c 0000 0000
+    6666 003c 1818 1818 1818 183c 0000 0000
+    0000 f86c 6666 f666 6666 6cf8 0000 0000
+    76dc 00c6 e6f6 fede cec6 c6c6 0000 0000
+    6030 007c c6c6 c6c6 c6c6 c67c 0000 0000
+    0c18 007c c6c6 c6c6 c6c6 c67c 0000 0000
+    1038 447c c6c6 c6c6 c6c6 c67c 0000 0000
+    76dc 007c c6c6 c6c6 c6c6 c67c 0000 0000
+    6c6c 007c c6c6 c6c6 c6c6 c67c 0000 0000
+    0000 0000 0066 3c18 3c66 0000 0000 0000
+    0000 7ac4 cece d6d6 e6e6 46bc 0000 0000
+    6030 00c6 c6c6 c6c6 c6c6 c67c 0000 0000
+    0c18 00c6 c6c6 c6c6 c6c6 c67c 0000 0000
+    1038 44c6 c6c6 c6c6 c6c6 c67c 0000 0000
+    6c6c 00c6 c6c6 c6c6 c6c6 c67c 0000 0000
+    0c18 0066 6666 3c18 1818 183c 0000 0000
+    0000 f060 7c66 6666 667c 60f0 0000 0000
+    0000 3c66 6666 6c66 6666 66ec 0000 0000
+    0000 6030 0078 0c7c cccc cc76 0000 0000
+    0000 1830 0078 0c7c cccc cc76 0000 0000
+    0010 386c 0078 0c7c cccc cc76 0000 0000
+    0000 76dc 0078 0c7c cccc cc76 0000 0000
+    0000 6c6c 0078 0c7c cccc cc76 0000 0000
+    0038 6c38 0078 0c7c cccc cc76 0000 0000
+    0000 0000 00cc 7636 7ed8 d86e 0000 0000
+    0000 0000 007c c6c0 c0c0 c67c 180c 3800
+    0000 6030 007c c6fe c0c0 c67c 0000 0000
+    0000 0c18 007c c6fe c0c0 c67c 0000 0000
+    0010 386c 007c c6fe c0c0 c67c 0000 0000
+    0000 6c6c 007c c6fe c0c0 c67c 0000 0000
+    0000 3018 0038 1818 1818 183c 0000 0000
+    0000 0c18 0038 1818 1818 183c 0000 0000
+    0010 386c 0038 1818 1818 183c 0000 0000
+    0000 6666 0038 1818 1818 183c 0000 0000
+    0000 761c 3c06 7ec6 c6c6 c67c 0000 0000
+    0000 76dc 00dc 6666 6666 6666 0000 0000
+    0000 6030 007c c6c6 c6c6 c67c 0000 0000
+    0000 0c18 007c c6c6 c6c6 c67c 0000 0000
+    0010 386c 007c c6c6 c6c6 c67c 0000 0000
+    0000 76dc 007c c6c6 c6c6 c67c 0000 0000
+    0000 6c6c 007c c6c6 c6c6 c67c 0000 0000
+    0000 0000 1818 007e 0018 1800 0000 0000
+    0000 0000 007a c4ce d6e6 46bc 0000 0000
+    0000 6030 00cc cccc cccc cc76 0000 0000
+    0000 1830 00cc cccc cccc cc76 0000 0000
+    0010 386c 00cc cccc cccc cc76 0000 0000
+    0000 cccc 00cc cccc cccc cc76 0000 0000
+    0000 0c18 00c6 c6c6 c6c6 c67e 060c f800
+    0000 e060 607c 6666 6666 667c 6060 f000
+    0000 6c6c 00c6 c6c6 c6c6 c67e 060c f800
 
 ~src/core.tal

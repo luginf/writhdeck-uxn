@@ -19,10 +19,10 @@ rom-gfx: bin
 	$(UXNASM) $(SRC_GFX) $(ROM_GFX)
 
 run: rom
-	./writhdeck $(FILE)
+	./writhdeck-uxn $(if $(FILE),$(FILE),-n)
 
 run-gfx: rom-gfx
-	$(UXNEMU) $(ROM_GFX) $(FILE)
+	$(UXNEMU) $(ROM_GFX) $(FILE) $(SIZE)
 
 test: rom
 	UXNCLI=$(UXNCLI) python3 tests/run_all.py

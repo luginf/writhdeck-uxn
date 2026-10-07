@@ -1,0 +1,78 @@
+#!/usr/bin/sh
+# writhdeck-uxn -- single launcher for both builds.
+#
+#   writhdeck-uxn [options] [file]        (no argument: this help)
+#     -n, --new          empty draft, no file
+#     -c, --cli          terminal mode (default): bin/writhdeck.rom via uxncli
+#     -g, --gui          graphical mode: bin/writhdeck-gfx.rom via uxnemu
+#     -s, --size WxH     graphical window size in pixels (e.g. 1280x800)
+#     -z, --zoom N       graphical window zoom 1 to 3 (uxnemu -2x / -3x)
+#     -l, --light        graphical mode: black on white (Ctrl+D toggles)
+#     -h, --help
+#
+# The file is opened from ITS directory (uxn's File device refuses any path
+# outside the current directory), so writhdeck-uxn can be run from anywhere;
+# writhd.ini is then looked up next to the file.
+# Environment: UXNCLI, UXNEMU select the emulators. Note: the December 2025
+# uxn2 build cannot read files, use uxnemu.
+#
+# Terminal mode: uxncli does not set up the tty itself (raw mode, echo) --
+# same limitation as kibi.tal, same remedy: disable icanon/echo before
+# running the rom and restore afterwards (even on error).
+DIR=$(cd "$(dirname "$0")" && pwd)
+MODE=cli SIZE= ZOOM= FILE= LIGHT=
+
+usage() { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; }
+
+[ $# -eq 0 ] && { usage; exit 0; }
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -n|--new) ;;
+        -l|--light) LIGHT=light ;;
+        -c|--cli) MODE=cli ;;
+        -g|--gui) MODE=gui ;;
+        -s|--size) SIZE=$2; shift ;;
+        --size=*) SIZE=${1#--size=} ;;
+        -z|--zoom) ZOOM=$2; shift ;;
+        --zoom=*) ZOOM=${1#--zoom=} ;;
+        -h|--help) usage; exit 0 ;;
+        --) shift; FILE=$1; break ;;
+        -*) echo "writhdeck-uxn: unknown option $1" >&2; usage >&2; exit 2 ;;
+        *) FILE=$1 ;;
+    esac
+    shift
+done
+
+if [ -n "$FILE" ]; then
+    case "$FILE" in
+        */*) cd "$(dirname "$FILE")" || exit 1; FILE=$(basename "$FILE") ;;
+    esac
+fi
+
+if [ "$MODE" = cli ]; then
+    [ -n "$SIZE$ZOOM$LIGHT" ] && echo "writhdeck-uxn: --size/--zoom/--light ignored in terminal mode" >&2
+    ROM=$DIR/bin/writhdeck.rom
+    [ -f "$ROM" ] || { echo "writhdeck-uxn: $ROM missing (make rom)" >&2; exit 1; }
+    TTY=`stty -g`
+    stty -ignbrk -brkint -ignpar -parmrk -inpck -istrip -inlcr -igncr -icrnl -ixon \
+         -ixoff -icanon onlcr -echo -isig -iuclc -ixany -imaxbel -xcase min 1 time 0
+    ${UXNCLI:-uxncli} "$ROM" ${FILE:+"$FILE"}
+    EXIT=$?
+    stty $TTY
+    exit $EXIT
+fi
+
+ROM=$DIR/bin/writhdeck-gfx.rom
+[ -f "$ROM" ] || { echo "writhdeck-uxn: $ROM missing (make rom-gfx)" >&2; exit 1; }
+case "$SIZE" in
+    ""|[0-9]*x[0-9]*) ;;
+    *) echo "writhdeck-uxn: invalid size '$SIZE' (expected WIDTHxHEIGHT)" >&2; exit 2 ;;
+esac
+case "$ZOOM" in ""|1) ZF= ;; 2) ZF=-2x ;; 3) ZF=-3x ;;
+    *) echo "writhdeck-uxn: invalid zoom '$ZOOM' (1, 2 or 3)" >&2; exit 2 ;; esac
+# the size is the rom's 2nd argument: without a file, pass an empty 1st one
+ARG2=$SIZE${LIGHT:+ $LIGHT}
+ARG2=${ARG2# }
+if [ -n "$ARG2" ]; then set -- "$FILE" "$ARG2"; else set -- ${FILE:+"$FILE"}; fi
+exec ${UXNEMU:-uxnemu} $ZF "$ROM" "$@"

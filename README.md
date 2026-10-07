@@ -1,5 +1,8 @@
 # writhdeck-uxn
 
+note: files are limited to 48k max in size!
+graphical version:  make run-gfx FILE=test.txt
+
 Uxntal port of [WrithDeck](https://github.com/luginf/writhdeck) for the
 [uxn](https://100r.co/site/uxn.html) virtual machine. Two entry points
 share the same editing logic (`src/core.tal`) and build to two
@@ -31,7 +34,7 @@ not a feature-complete one. See "Known limitations" below.
 
 ```sh
 make rom              # assembles src/writhdeck.tal -> bin/writhdeck.rom
-./writhdeck [path]     # opens path, or starts an empty draft if omitted
+./writhdeck-uxn path   # opens path;  ./writhdeck-uxn -n  starts an empty draft
 make run FILE=path    # equivalent, via the Makefile
 make test             # builds the rom, then runs the pty regression suite in tests/
 
@@ -39,11 +42,22 @@ make rom-gfx           # assembles src/writhdeck-gfx.tal -> bin/writhdeck-gfx.ro
 make run-gfx FILE=path # runs it via uxnemu (needs a real display)
 ```
 
-`writhdeck` is a small shell wrapper (mirroring the one shipped with
-the reference uxn editor `kibi`) that puts the terminal in raw mode
-(`stty`) before launching the rom and restores it afterwards —
-`uxncli` itself never touches termios, so keys would otherwise be
-echoed and line-buffered without it.
+`writhdeck-uxn` is the single launcher for both builds:
+
+```
+./writhdeck-uxn [-c|-g] [-n] [-s WxH] [-z 1|2|3] [file]   # no argument: help
+./writhdeck-uxn file.txt                 # terminal (default)
+./writhdeck-uxn -g file.txt              # graphical window (uxnemu)
+./writhdeck-uxn -g -s 1280x800 file.txt  # graphical, chosen window size
+./writhdeck-uxn -g -n -z 2               # graphical, zoomed x2, empty draft
+```
+
+It opens the file from the file's own directory (uxn's File device
+refuses paths outside the cwd, so `writhd.ini` is also looked up next to
+the file), puts the terminal in raw mode before launching the console
+rom and restores it afterwards (`uxncli` never touches termios), and
+passes `-s` as the 2nd rom argument for the graphical build. Set
+`UXNCLI`/`UXNEMU` to pick emulators.
 
 `uxnasm`/`uxncli` must be installed and on `PATH` (or set `UXNASM`/
 `UXNCLI` when invoking `make`).
@@ -55,7 +69,7 @@ ESC[999B ESC[6n`, moving the cursor to the bottom-right corner then
 asking for its position), the same idiom used by the reference uxn
 editor `kibi`. Boot blocks until the terminal answers with `ESC[row;
 colR` — this requires a real ANSI/VT100-compatible terminal (the
-`writhdeck` wrapper already puts the tty in raw mode, which is also
+`writhdeck-uxn` wrapper already puts the tty in raw mode, which is also
 what lets the reply reach the rom instead of being echoed). If either
 field of the reply is empty (a technically-valid but degenerate DSR
 response), that axis falls back to the previous fixed default (24
@@ -68,7 +82,7 @@ never proceeds — see `wd-sz-state`/`on-sizereply` in
 
 `uxncli`'s File device refuses to open a path it considers outside its
 sandbox (silently: `/success` reports 0 bytes read, no error surfaced
-in-program). In practice this means: run `writhdeck` from a directory
+in-program). In practice this means: run `writhdeck-uxn` from a directory
 that is at or above the target file's location, or pass a path
 relative to that directory — an absolute path elsewhere on the
 filesystem, or a path escaping via `..` from an unrelated cwd, may be
@@ -105,6 +119,13 @@ Arrows (Up/Down/Left/Right, sticky column across lines), Home/End,
 Enter, Backspace, Ctrl+S (save — only if a filename was given on the
 command line; no save-as prompt), Ctrl+Q (quit unconditionally, no
 "unsaved changes" confirmation).
+
+Graphical build only: **Ctrl+T** table of contents (headings indented by
+level; Up/Down choose, Enter jumps, Esc or Ctrl+T cancels — F11 of
+`writhdeck.tcl` is unavailable because `uxnemu` keeps it for fullscreen
+and the Controller device never reports function keys), **Ctrl+D**
+black-on-white / white-on-black toggle (start light with `-l`, or by
+adding `light` to the 2nd rom argument).
 
 Any byte `>= 0x20` other than `0x7F` is inserted into the buffer as
 typed, including the individual bytes of a multi-byte UTF-8 sequence
@@ -182,6 +203,22 @@ uxnemu bin/writhdeck-gfx.rom path/to/file.txt
 make run-gfx FILE=path/to/file.txt
 ```
 
+**Window size.** Default is 960x576 (120x36 cells). Pass an optional
+second argument `WIDTHxHEIGHT` (pixels, 256..2048 x 128..1536, rounded
+to multiples of 8/16): `uxnemu bin/writhdeck-gfx.rom file.txt 1280x800`
+(`make run-gfx FILE=file.txt SIZE=1280x800`). `uxnemu -2x ...` also
+zooms the whole window.
+
+**Use `uxnemu`, not `uxn2`, to load files.** The `uxn2` build checked
+here (26 Dec 2025, `implementations/uxn2/uxn2.c`) has an emulator bug:
+`emu_deo(Uint8 addr, ...)` reuses its 8-bit port parameter `addr` to
+hold the 16-bit RAM address of `File/name`/`File/read`/`File/write`,
+truncating it to its low byte. The file name is then read from RAM
+page 0 (empty), so every file access fails silently and the editor
+starts with an empty buffer (status bar still shows the name). Verified
+with a minimal ROM unrelated to this project. `uxnemu` and `uxncli`
+are unaffected.
+
 `uxn2 bin/writhdeck-gfx.rom < file.txt` does **not** load `file.txt` —
 stdin redirection has nothing to do with argv. Both emulators also run
 a background thread that streams the real process stdin (piped file or
@@ -215,20 +252,15 @@ for the without-file case) never both fire.
 UTF-8 bytes of composed keystrokes through `Controller/key`, one byte
 per vector call (confirmed in `uxnemu.c`/`uxn2.c`) — so accented bytes
 *are* inserted into the buffer correctly, same as any other byte
-`on-button` accepts. What used to be invisible was purely the
-*display*: the bitmap font has no accented glyphs, so those bytes drew
-as blank spaces. `gfx-utf8-decode` (in `writhdeck-gfx.tal`) now
-recognizes the 2-byte UTF-8 form of Latin-1 Supplement (lead `0xc3`,
-covering all the accented letters used in French) and substitutes the
-matching unaccented base letter (`é` → `e`, `ç` → `c`, ...) using
-glyphs the font already has — no new pixel art, nothing that needs
-eyeballing beyond what already covers the ASCII alphabet. The saved
-file is unaffected (exact original UTF-8 bytes); only the on-screen
-representation drops the diacritic. One cosmetic side effect: word-wrap
-and cursor placement still count bytes, not glyphs, so the cursor/line
-padding can drift by one column after a rendered accent within the
-same row — see the file's own comment above `gfx-utf8-decode` for the
-full reasoning.
+`on-button` accepts. The display now has real accented glyphs: the font is the VGA 8x16
+bitmap font of `Uni2-VGA16.psf` (same style as the old ASCII font),
+covering ASCII, all of Latin-1 and `’ … – — “ ” œ Œ €`. `gfx-utf8-decode`
+turns the UTF-8 sequence into a glyph code; any other multi-byte
+sequence (emoji, other scripts) draws as a single `?`. Padding and the
+cursor column are computed in screen cells, but word-wrap in `core.tal`
+still counts bytes, so a line with accents wraps slightly early. The
+cursor moves by byte: on a 2-byte letter it takes two Left/Right
+presses and is invisible on the second byte.
 
 **Keyboard differences from the console build**, both consequences of
 what Varvara's `Controller` device actually exposes, not choices made
@@ -245,18 +277,19 @@ by this port:
   re-fires the Controller vector (same as OS-level key repeat in a
   terminal) rather than through explicit key-repeat logic in this
   port.
-- Non-ASCII text still renders imperfectly: the bitmap font only has
-  glyphs for ASCII `0x20`–`0x7d`. French Latin-1 accents (`é`, `è`,
-  `ç`, ...) get substituted with their unaccented base letter (see
-  above); anything else multi-byte (other scripts, emoji, ...) still
-  renders as one blank glyph per byte — a real loss of fidelity
-  compared to the console build, which hands UTF-8 decoding off to the
-  host terminal entirely. The underlying buffer and saved file remain
-  byte-faithful either way; only the on-screen glyph is approximate or
-  missing.
+- Characters outside Latin-1 and the few typographic signs in the font
+  (emoji, other scripts) render as `?`; the buffer and saved file stay
+  byte-faithful.
 
 **No automated verification exists for this entry** — see "Known
 limitations".
+
+### Testing the graphical build without a window
+
+`python3 tests/gfx_headless.py bin/writhdeck-gfx.rom script.txt [rom args]`
+builds a scripted copy of `uxn2.c` (no SDL window, so no focus stealing;
+the upstream File bug is patched in that copy) and replays commands
+(`frame`, `key text`, `ctrl q`, `btn 0x20`, `enter`, `bksp`, `shot out.png`).
 
 ## Known limitations
 

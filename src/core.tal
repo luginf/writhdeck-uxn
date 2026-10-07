@@ -163,7 +163,7 @@
     DUP #02 EQU #00 EQU ?{
         ( type == ARG : accumule seulement si on est encore dans le 1er argument )
         POP
-        .wd-arg-num LDZ2 #0000 NEQ2 #00 EQU ?{ BRK }
+        .wd-arg-num LDZ2 #0000 NEQ2 #00 EQU ?{ !&second }
         .Console/read DEI
         ;wd-fname #00 .wd-fname-len LDZ ADD2 STA
         .wd-fname-len LDZ INC .wd-fname-len STZ
@@ -175,6 +175,17 @@
     POP
     #00 ;wd-fname #00 .wd-fname-len LDZ ADD2 STA   ( NUL-terminer le nom de fichier )
     core-boot
+BRK
+
+    ( 2e argument : octets ranges dans wd-arg2, 1er octet = longueur,
+    | max 30. Tout argument de rang >= 2 est ignore. Utilise par l'entree
+    | graphique pour la taille de fenetre, voir gfx-parse-size. )
+    &second
+    .wd-arg-num LDZ2 #0001 EQU2 ?{ BRK }
+    ;wd-arg2 LDA #1e LTH #00 EQU ?{
+        .Console/read DEI
+        ;wd-arg2 #00 ;wd-arg2 LDA INC ADD2 STA
+        ;wd-arg2 LDA INC ;wd-arg2 STA }
 BRK
 
 ( Charge la config/le fichier -- partage, ne touche a AUCUN device
@@ -832,5 +843,6 @@ JMP2r
 | au-dela de la taille reelle de ce portage, voir make test/make
 | rom-gfx pour verifier qu'aucun `.rom.sym` n'atterrit dans une plage
 | reservee. )
+|3f00 @wd-arg2 $20
 |4000 @wd-fname $100
 |4100 @wd-buf $be00

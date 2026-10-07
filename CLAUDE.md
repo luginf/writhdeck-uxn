@@ -139,7 +139,7 @@ Aucun appel `termios`/`tcsetattr` nulle part dans `uxn/src/` (confirmé
 en lisant les sources, et par le TODO du README de `kibi` : "Make
 emulator change to raw mode"). Sans ça, les touches tapées sont
 échotées et bufferisées ligne par ligne au lieu d'arriver octet par
-octet. Corrigé ici par le script `writhdeck` (wrapper shell, motif
+octet. Corrigé ici par le script `writhdeck-uxn` (wrapper shell, motif
 copié de `apps/kibi/src/kibi`) qui appelle `stty` avant/après le
 lancement du rom. Le harnais de test Python doit faire l'équivalent
 via `tty.setraw(slave)` avant `subprocess.Popen`.
@@ -148,7 +148,7 @@ via `tty.setraw(slave)` avant `subprocess.Popen`.
 
 Le device File refuse silencieusement (`/success` = 0, pas d'erreur
 visible dans le programme) d'ouvrir un chemin qu'il considère hors de
-son "sandbox" — en pratique, lancer `writhdeck` depuis un répertoire
+son "sandbox" — en pratique, lancer `writhdeck-uxn` depuis un répertoire
 qui contient (ou est) celui du fichier ciblé. Un chemin absolu ailleurs
 sur le système, ou un `..` s'échappant d'un cwd sans rapport, peut être
 bloqué par `uxncli` avant même que le rom ne le voie. Voir aussi la
@@ -601,6 +601,40 @@ identifier un événement GARANTI par la boucle principale de
 l'émulateur (ici : le premier appel à `Screen/vector`, dès que la
 fenêtre existe) comme filet de sécurité, protégé par un drapeau pour
 rester idempotent si le déclencheur "normal" a déjà fait le travail.
+
+### 21. Le mode graphique PEUT être testé ici (DISPLAY=:0 + xdotool + import) ; `uxn2` ne charge aucun fichier (bug émulateur)
+
+Contrairement à ce que dit le piège #17, un affichage X existe :
+`uxnemu bin/writhdeck-gfx.rom f.txt &`, puis `xdotool search --pid`,
+`xdotool key/type`, `import -window ID out.png` et lecture du PNG.
+Vérifié : chargement, saisie, flèches, Ctrl+S fonctionnent sous
+`uxnemu` (fichier dans le cwd, voir piège #6). Sous `uxn2` (source
+`/temp/github/uxn-all/implementations/uxn2/uxn2.c`), `emu_deo(Uint8
+addr, ...)` écrase son paramètre 8 bits `addr` avec l'adresse RAM
+16 bits de File/name -> nom lu en page 0 = vide, aucun fichier ne se
+charge (bug amont, reproduit avec une mini-ROM). Aucun contournement
+raisonnable côté ROM : utiliser `uxnemu`. Aussi corrigé : polarité de
+`on-first-frame` (`NEQ #00 EQU ?{` relançait `core-boot` quand le boot
+avait DÉJÀ eu lieu, et ne le lançait pas sinon).
+
+Test graphique SANS fenêtre ni vol de focus : `tests/gfx_headless.py` (émulateur
+uxn2 compilé à partir des sources, mode scripté, capture PNG). NE PAS piloter
+uxnemu avec xdotool sur le vrai écran de l'utilisateur : les frappes de
+l'utilisateur atterrissent dans la fenêtre de test. Lanceur unique : `./writhdeck-uxn
+[-c|-g] [-n] [-s LxH] [-z N] [fichier]` (sans argument : aide` (cd dans le répertoire du fichier).
+
+Gfx : Ctrl+T = TOC (`gfx-toc-*`, vars en |00c0), Ctrl+D = thème clair/sombre
+(`gfx-apply-theme`, option `light` dans le 2e argv). PIÈGE : un vecteur
+(on-first-frame, on-button...) se termine par `BRK`, JAMAIS `JMP2r` -- la pile
+de retour est vide, JMP2r dépile une vieille adresse et saute n'importe où.
+
+Police graphique : table `gfx-font` = 224 glyphes (codes 0x20-0xff) générés
+depuis `/usr/share/consolefonts/Uni2-VGA16.psf.gz` (même style VGA que l'ancienne
+police ; extras 0x80-0x88 = ’ … – — “ ” œ Œ €). `gfx-utf8-decode` renvoie
+(code, octets consommés) ; colonne du curseur/pad calculées en cellules
+(`gfx-cells`, `Screen/x`), le word-wrap de core.tal reste en octets.
+2e argv = taille `LxH` (`wd-arg2` en |3f00, `gfx-parse-size`).
+Variables gfx maintenant à partir de |0000 (RAM page 0 libre en dessous de 0x30).
 
 ## Bug de logique réel (pas un piège de langage) : `min2`
 
