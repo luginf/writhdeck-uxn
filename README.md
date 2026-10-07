@@ -120,12 +120,27 @@ Enter, Backspace, Ctrl+S (save — only if a filename was given on the
 command line; no save-as prompt), Ctrl+Q (quit unconditionally, no
 "unsaved changes" confirmation).
 
-Graphical build only: **Ctrl+T** table of contents (headings indented by
-level; Up/Down choose, Enter jumps, Esc or Ctrl+T cancels — F11 of
-`writhdeck.tcl` is unavailable because `uxnemu` keeps it for fullscreen
-and the Controller device never reports function keys), **Ctrl+D**
-black-on-white / white-on-black toggle (start light with `-l`, or by
-adding `light` to the 2nd rom argument).
+Graphical build only (the Controller device reports no function keys,
+and `uxnemu` keeps F11 for fullscreen, so everything is Ctrl+letter;
+**Ctrl+H** shows this list in the program):
+
+| Key | Action |
+| --- | --- |
+| Ctrl+S | Save (only when a file name was given) |
+| Ctrl+Q | Quit; **asks for confirmation** if there are unsaved changes (`s` save and quit, `y` quit without saving, any other key cancels) |
+| Ctrl+F | Find, case-insensitive for ASCII: type, Enter = next, Up = previous, Down = next, Esc closes; wraps around; the last query is kept |
+| Ctrl+G | Go to line number |
+| Ctrl+T | Table of contents: headings indented by level, Up/Down, Enter jumps, Esc cancels |
+| Ctrl+D | Dark / light theme (start light with `-l`) |
+| Ctrl+H | Help |
+| Ctrl+Up / Ctrl+Down | Page up / page down |
+| Ctrl+Home | Start of the document |
+| Delete / Backspace | Erase forward / backward, **one whole UTF-8 character** at a time |
+
+The status bar shows file, line,column, `[+]` when modified, and a word
+count. Left/Right/Delete/Backspace and Up/Down never stop in the middle
+of a multi-byte UTF-8 character (this core change also applies to the
+console build).
 
 Any byte `>= 0x20` other than `0x7F` is inserted into the buffer as
 typed, including the individual bytes of a multi-byte UTF-8 sequence

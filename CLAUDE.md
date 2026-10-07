@@ -437,7 +437,7 @@ détecte PAS un chevauchement de `|ADDR` en arrière) : `|0020`-`|002f`
 pour les variables propres à CHAQUE entrée (budget volontairement
 large : la console y range `wd-esc-state`/`wd-sz-*`/`wd-dcount`, le
 graphique `gfx-*`), `|0030` pour les variables PARTAGÉES (`core.tal`),
-`|0100` pour le code propre à l'entrée, `|2000` pour le code partagé
+`|0100` pour le code propre à l'entrée, `|2800` pour le code partagé
 (`core.tal`), `|4000`/`|4100` pour `wd-fname`/`wd-buf`. Après toute
 modification significative de taille d'un des deux fichiers, vérifier
 via `.rom.sym` (même technique qu'au piège #13) qu'aucun label
@@ -623,6 +623,8 @@ uxnemu avec xdotool sur le vrai écran de l'utilisateur : les frappes de
 l'utilisateur atterrissent dans la fenêtre de test. Lanceur unique : `./writhdeck-uxn
 [-c|-g] [-n] [-s LxH] [-z N] [fichier]` (sans argument : aide` (cd dans le répertoire du fichier).
 
+Gfx modes (`gfx-mode`) : 0 édition, 1 TOC, 2 aller à la ligne, 3 recherche, 4 confirmation de sortie, 5 aide ; dispatch dans `gfx-on-mode`. Raccourcis : Ctrl+S/Q/E/T/D/G/F/H, Ctrl+Haut/Bas = pages, Ctrl+Début = haut du document, Suppr = 0x7f.
+PIÈGES DE CETTE ÉTAPE : (1) `uxnasm` a un compteur de lambdas (`?{ }`) sur UN OCTET : > 256 `?{` dans l'assemblage => « Label duplicate: } » absurde. Tout `src/writhdeck-gfx.tal` utilise donc `?&kN ... &kN` (équivalent exact, aucune lambda) ; écrire les nouveaux blocs de la même façon. (2) zero-page graphique pleine : |0000-|0025 puis |00c0-|00ff (core |0030-|009a). (3) `core.tal` est maintenant en |2800 (le code graphique dépassait |2000). (4) polarité : « exécuter le bloc quand X != 0 » = `X #00 EQU ?{`, « quand X == 0 » = `X #00 EQU #00 EQU ?{` -- j'ai inversé les deux dans gfx-on-input et gfx-inp digit/backspace, trouvé par capture headless. (5) core : `backspace`/`move-*`/`delete-forward`/`snap-cursor` travaillent par caractère UTF-8 (`is-cont`).
 Gfx : Ctrl+T = TOC (`gfx-toc-*`, vars en |00c0), Ctrl+D = thème clair/sombre
 (`gfx-apply-theme`, option `light` dans le 2e argv). PIÈGE : un vecteur
 (on-first-frame, on-button...) se termine par `BRK`, JAMAIS `JMP2r` -- la pile

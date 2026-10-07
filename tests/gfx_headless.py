@@ -9,7 +9,7 @@ script : une commande par ligne
   key TEXTE       envoie chaque caractere via Controller/key
   ctrl X          Ctrl+X (bit Ctrl du bouton + lettre en clair)
   btn N           appui+relache d'un bouton (0x10 haut 0x20 bas 0x40 gauche 0x80 droite 0x08 home)
-  enter / bksp    Entree / Retour arriere
+  enter / bksp / esc / del   Entree, Retour arriere, Echap, Suppr
   shot out.png    capture
 Les sources uxn2.c sont lues dans $UXN2_SRC (defaut /temp/github/uxn-all/
 implementations/uxn2/uxn2.c). Le bug amont emu_deo(Uint8 addr) qui tronque
@@ -39,6 +39,8 @@ static void hl_run(const char *script){
 		else if(!strncmp(l, "btn ", 4)) { int b = (int)strtol(l + 4, NULL, 0); controller_down(b); controller_up(b); }
 		else if(!strncmp(l, "enter", 5)) controller_key(0x0d);
 		else if(!strncmp(l, "bksp", 4)) controller_key(0x08);
+		else if(!strncmp(l, "esc", 3)) controller_key(0x1b);
+		else if(!strncmp(l, "del", 3)) controller_key(0x7f);
 		else if(!strncmp(l, "shot ", 5)) { screen_update(); hl_shot(l + 5); }
 		if(dev[0x0f]) break;
 	}
@@ -72,7 +74,8 @@ def main():
     shots = [l.split(None, 1)[1].strip() for l in open(script) if l.startswith("shot ")]
     subprocess.run([exe, rom] + args, env=env, check=False, stdin=subprocess.DEVNULL, timeout=30)
     for png in shots:   # le script ecrit du PPM sous le nom demande : on convertit en place
-        subprocess.run(["convert", png, png], check=True)
+        if os.path.exists(png):   # absent si le rom a quitte avant la capture
+            subprocess.run(["convert", png, png], check=True)
 
 if __name__ == "__main__":
     main()

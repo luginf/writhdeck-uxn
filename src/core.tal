@@ -145,7 +145,7 @@
 @wd-tmp47       $2  ( visual-row-before : fin de rangee temporaire pendant
                     | ce meme balayage )
 
-|2000
+|2800
 
 ( --- phase 1 : capture du premier argument (chemin de fichier) ---
 | Console/type : STD=1 (frappe normale -- signifie ICI qu'aucun
@@ -263,22 +263,64 @@ JMP2r
     .wd-buflen LDZ2 #0001 ADD2 .wd-buflen STZ2
 JMP2r
 
+( octet 0x80-0xbf = continuation UTF-8, jamais le debut d'un caractere )
+@is-cont ( pos* -- flag )
+    ;wd-buf ADD2 LDA #80 SUB #40 LTH
+JMP2r
+
+( retire l'octet juste avant le curseur, un seul )
+@del-one ( -- )
+    shift-left
+    .wd-buflen LDZ2 #0001 SUB2 .wd-buflen STZ2
+    .wd-cursor LDZ2 #0001 SUB2 .wd-cursor STZ2
+JMP2r
+
+( Retour arriere par CARACTERE : retire les octets de continuation puis
+| l'octet de tete, pour ne jamais laisser un demi-caractere UTF-8. )
 @backspace ( -- )
-    .wd-cursor LDZ2 #0000 NEQ2 #00 EQU ?{
-        shift-left
-        .wd-buflen LDZ2 #0001 SUB2 .wd-buflen STZ2
-        .wd-cursor LDZ2 #0001 SUB2 .wd-cursor STZ2 }
+    &loop
+        .wd-cursor LDZ2 #0000 EQU2 ?{
+            .wd-cursor LDZ2 #0001 SUB2 is-cont .wd-tmp3 STZ
+            del-one
+            .wd-tmp3 LDZ #00 EQU ?{ !&loop } }
+JMP2r
+
+( Suppr : efface le caractere sous le curseur, octets de continuation
+| compris. wd-tmp3 = position de depart. )
+@delete-forward ( -- )
+    .wd-cursor LDZ2 .wd-buflen LDZ2 LTH2 ?{ JMP2r }
+    .wd-cursor LDZ2 .wd-tmp3 STZ2
+    move-right
+    &loop
+        .wd-cursor LDZ2 .wd-tmp3 LDZ2 GTH2 #00 EQU ?{
+            del-one
+            !&loop }
+JMP2r
+
+( recule le curseur au debut du caractere qui le contient )
+@snap-cursor ( -- )
+    &loop
+        .wd-cursor LDZ2 #0000 EQU2 ?{
+            .wd-cursor LDZ2 is-cont #00 EQU ?{
+                .wd-cursor LDZ2 #0001 SUB2 .wd-cursor STZ2
+                !&loop } }
 JMP2r
 
 ( --- deplacement --- )
 @move-left ( -- )
     .wd-cursor LDZ2 #0000 NEQ2 #00 EQU ?{
-        .wd-cursor LDZ2 #0001 SUB2 .wd-cursor STZ2 }
+        .wd-cursor LDZ2 #0001 SUB2 .wd-cursor STZ2
+        snap-cursor }
 JMP2r
 
 @move-right ( -- )
     .wd-cursor LDZ2 .wd-buflen LDZ2 LTH2 #00 EQU ?{
-        .wd-cursor LDZ2 #0001 ADD2 .wd-cursor STZ2 }
+        .wd-cursor LDZ2 #0001 ADD2 .wd-cursor STZ2
+        &skip
+            .wd-cursor LDZ2 .wd-buflen LDZ2 LTH2 #00 EQU ?{
+                .wd-cursor LDZ2 is-cont #00 EQU ?{
+                    .wd-cursor LDZ2 #0001 ADD2 .wd-cursor STZ2
+                    !&skip } } }
 JMP2r
 
 @move-home ( -- )
@@ -301,6 +343,7 @@ JMP2r
     .wd-cursor LDZ2 .wd-tmp1 LDZ2 SUB2 .wd-tmp3 STZ2
     .wd-tmp2 LDZ2 .wd-text-width LDZ2 wrap-row-end .wd-tmp4 STZ2
     .wd-tmp2 LDZ2 .wd-tmp3 LDZ2 ADD2 .wd-tmp4 LDZ2 min2 .wd-cursor STZ2
+    snap-cursor
 JMP2r
 
 @move-down ( -- )
@@ -310,7 +353,8 @@ JMP2r
         .wd-cursor LDZ2 .wd-tmp1 LDZ2 SUB2 .wd-tmp2 STZ2
         .wd-tmp5 LDZ2 wrap-next-start .wd-tmp3 STZ2
         .wd-tmp3 LDZ2 .wd-text-width LDZ2 wrap-row-end .wd-tmp4 STZ2
-        .wd-tmp3 LDZ2 .wd-tmp2 LDZ2 ADD2 .wd-tmp4 LDZ2 min2 .wd-cursor STZ2 }
+        .wd-tmp3 LDZ2 .wd-tmp2 LDZ2 ADD2 .wd-tmp4 LDZ2 min2 .wd-cursor STZ2
+        snap-cursor }
 JMP2r
 
 ( --- utilitaires sur lignes --- )
