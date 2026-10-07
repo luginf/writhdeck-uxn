@@ -89,6 +89,16 @@
                     | possibles (on-argv si un fichier a ete donne,
                     | on-first-frame sinon) -- voir on-first-frame )
 
+|0026
+@gfx-sel        $2  ( ancre de la selection, ffff = aucune )
+@gfx-slo        $2  ( debut de la selection, calcule par gfx-sel-range )
+@gfx-shi        $2  ( fin exclue de la selection )
+@gfx-cl         $2  ( longueur du presse-papiers )
+
+|00ba
+@gfx-cmt        $1  ( 1 = la ligne logique en cours est un commentaire )
+@gfx-ccol       $1  ( couleur du caractere en cours )
+
 |00c0
 @gfx-dark       $1  ( 1 = fond noir, 0 = fond blanc, Ctrl+D bascule )
 @gfx-mode        $1  ( 0 edition, 1 TOC, 2 aller a la ligne, 3 recherche, 4 confirmer quitter, 5 aide )
@@ -129,7 +139,8 @@
 @gfx-hp         $2  ( aide : pointeur de ligne )
 @gfx-hr         $2  ( aide : rangee )
 
-|3f40 @gfx-inp $24  ( saisie : 1er octet = longueur, puis les octets )
+|4b40 @gfx-inp $24
+|4ba0 @gfx-rep $24  ( saisie : 1er octet = longueur, puis les octets )
 
 |0100
 
@@ -137,6 +148,7 @@
     ;gfx-meta .System/metadata DEO2
     #01 .gfx-dark STZ
     #00 .gfx-mode STZ
+    #ffff .gfx-sel STZ2
     gfx-apply-theme
     ( AUTO Y+ADDR : chaque Screen/sprite DEO avance l'adresse ET fait
     | descendre y de 8px -- draw-char en ecrit deux (DEOk puis DEO) pour
@@ -195,6 +207,7 @@ BRK
     .Screen/height DEI2 x16-inv .wd-rows STZ2
     #0000 .Console/vector DEO2
     ;on-button .Controller/vector DEO2
+    .wd-trunc LDZ #00 EQU ?&nobig #09 .gfx-mode STZ &nobig
     gfx-render
 JMP2r
 
@@ -287,9 +300,10 @@ BRK
     | l'etat des boutons (fleches/Home) nous interesse. )
     DUP #00 EQU #00 EQU ?&k1 POP !&arrows &k1
 
-    DUP #0d EQU #00 EQU ?&k2 POP #0a insert-byte after-edit BRK &k2
-    DUP #0a EQU #00 EQU ?&k3 POP #0a insert-byte after-edit BRK &k3
-    DUP #08 EQU #00 EQU ?&k4 POP backspace after-edit BRK &k4
+    DUP #0d EQU #00 EQU ?&k2 POP gfx-sel-eat #0a insert-byte after-edit BRK &k2
+    DUP #0a EQU #00 EQU ?&k3 POP gfx-sel-eat #0a insert-byte after-edit BRK &k3
+    DUP #1b EQU #00 EQU ?&kesc POP gfx-sel-clear gfx-render BRK &kesc
+    DUP #08 EQU #00 EQU ?&k4 POP gfx-sel-active ?&kbs backspace after-edit BRK &kbs gfx-sel-eat after-edit BRK &k4
 
     ( Ctrl+lettre : bit 0x01 du bouton ET la lettre en CLAIR (pas un
     | code de controle) -- voir la note en tete de fichier. Si Ctrl
@@ -297,20 +311,28 @@ BRK
     .wd-tmp1 LDZ #01 AND #00 EQU #00 EQU ?&k5 !&plain &k5
     DUP #71 EQU #00 EQU ?&k6 POP gfx-try-quit BRK &k6               ( Ctrl+Q )
     DUP #73 EQU #00 EQU ?&k7 POP save-file gfx-render BRK &k7 ( Ctrl+S )
-    DUP #65 EQU #00 EQU ?&k8 POP move-end after-move BRK &k8
+    DUP #65 EQU #00 EQU ?&k8 POP gfx-sel-clear move-end after-move BRK &k8
     DUP #74 EQU #00 EQU ?&k9 POP gfx-toc-open BRK &k9
     DUP #67 EQU #00 EQU ?&k10 POP gfx-open-goto BRK &k10              ( Ctrl+G : aller a la ligne )
     DUP #66 EQU #00 EQU ?&k11 POP gfx-open-find BRK &k11              ( Ctrl+F : recherche )
+    DUP #72 EQU #00 EQU ?&kr POP gfx-open-repl BRK &kr                  ( Ctrl+R : remplacer )
     DUP #68 EQU #00 EQU ?&k12 POP gfx-help-open BRK &k12              ( Ctrl+H : aide )               ( Ctrl+T : table des matieres )
+    DUP #7a EQU #00 EQU ?&kz POP gfx-sel-clear undo after-edit BRK &kz
+    DUP #61 EQU #00 EQU ?&ka POP gfx-sel-all BRK &ka                    ( Ctrl+A : tout selectionner )
+    DUP #63 EQU #00 EQU ?&kc POP gfx-copy BRK &kc                       ( Ctrl+C : copier )
+    DUP #78 EQU #00 EQU ?&kx POP gfx-copy gfx-sel-eat after-edit BRK &kx   ( Ctrl+X : couper )
+    DUP #76 EQU #00 EQU ?&kv POP gfx-sel-eat gfx-paste after-edit BRK &kv  ( Ctrl+V : coller )                ( Ctrl+Z : annuler )
+    DUP #79 EQU #00 EQU ?&ky POP gfx-sel-clear redo after-edit BRK &ky                ( Ctrl+Y : retablir )
     DUP #64 EQU #00 EQU ?&k13 POP gfx-toggle-theme BRK &k13           ( Ctrl+D : clair/sombre )  ( Ctrl+E : Fin, voir note en tete )
 
     &plain
     DUP #20 LTH #00 EQU ?&k14 POP BRK &k14
-    DUP #7f EQU #00 EQU ?&k15 POP delete-forward after-edit BRK &k15
-    insert-byte after-edit
+    DUP #7f EQU #00 EQU ?&k15 POP gfx-sel-active ?&kds delete-forward after-edit BRK &kds gfx-sel-eat after-edit BRK &k15
+    gfx-sel-eat insert-byte after-edit
     BRK
 
     &arrows
+    gfx-sel-pre
     .wd-tmp1 LDZ #09 AND #09 EQU #00 EQU ?&k16 #0000 .wd-cursor STZ2 after-move BRK &k16
     .wd-tmp1 LDZ #11 AND #11 EQU #00 EQU ?&k17 gfx-page-up after-move BRK &k17
     .wd-tmp1 LDZ #21 AND #21 EQU #00 EQU ?&k18 gfx-page-down after-move BRK &k18
@@ -332,12 +354,121 @@ JMP2r
     gfx-render
 JMP2r
 
+( ===== selection et presse-papiers interne =====
+| Maj+fleches etendent la selection (bouton Maj GAUCHE seulement, c'est
+| tout ce que le Controller d'uxn transmet). Affichee en video inverse :
+| couleur de sprite 4 = pixels de fond en couleur 1, glyphe en couleur 0.
+| Le presse-papiers est interne (512 octets max), uxn n'a pas d'acces au
+| presse-papiers du systeme. )
+@gfx-sel-clear ( -- )
+    #ffff .gfx-sel STZ2
+JMP2r
+
+@gfx-sel-active ( -- flag )
+    .gfx-sel LDZ2 #ffff EQU2 ?&no
+    .gfx-sel LDZ2 .wd-cursor LDZ2 EQU2 ?&no
+    #01 JMP2r
+    &no
+    #00
+JMP2r
+
+@gfx-sel-range ( -- )
+    #0000 .gfx-slo STZ2
+    #0000 .gfx-shi STZ2
+    gfx-sel-active ?&on
+    JMP2r
+    &on
+    .gfx-sel LDZ2 .wd-cursor LDZ2 LTH2 ?&fwd
+    .wd-cursor LDZ2 .gfx-slo STZ2
+    .gfx-sel LDZ2 .gfx-shi STZ2
+    JMP2r
+    &fwd
+    .gfx-sel LDZ2 .gfx-slo STZ2
+    .wd-cursor LDZ2 .gfx-shi STZ2
+JMP2r
+
+( supprime le texte selectionne s'il y en a un )
+@gfx-sel-eat ( -- )
+    gfx-sel-active ?&on
+    gfx-sel-clear
+    JMP2r
+    &on
+    gfx-sel-range
+    .gfx-shi LDZ2 .wd-cursor STZ2
+    .gfx-shi LDZ2 .gfx-slo LDZ2 SUB2 .gfx-gp STZ2
+    &l
+        .gfx-gp LDZ2 #0000 EQU2 ?&done
+        del-one
+        .gfx-gp LDZ2 #0001 SUB2 .gfx-gp STZ2
+        !&l
+    &done
+    gfx-sel-clear
+JMP2r
+
+( avant un deplacement : Maj ancre la selection, sinon on l'abandonne )
+@gfx-sel-pre ( -- )
+    .wd-tmp1 LDZ #f8 AND #00 EQU ?&ret
+    .wd-tmp1 LDZ #04 AND ?&shift
+    gfx-sel-clear
+    JMP2r
+    &shift
+    .gfx-sel LDZ2 #ffff EQU2 #00 EQU ?&ret
+    .wd-cursor LDZ2 .gfx-sel STZ2
+    &ret
+JMP2r
+
+@gfx-sel-all ( -- )
+    #0000 .gfx-sel STZ2
+    .wd-buflen LDZ2 .wd-cursor STZ2
+    clamp-scroll
+    gfx-render
+JMP2r
+
+@gfx-copy ( -- )
+    gfx-sel-active ?&on
+    JMP2r
+    &on
+    gfx-sel-range
+    .gfx-shi LDZ2 .gfx-slo LDZ2 SUB2 .gfx-gp STZ2
+    .gfx-gp LDZ2 #01fe LTH2 ?&fit
+    #01fe .gfx-gp STZ2
+    &fit
+    ( ne coupe jamais un caractere UTF-8 en deux )
+    &back
+        .gfx-gp LDZ2 #0000 EQU2 ?&copy
+        .gfx-slo LDZ2 .gfx-gp LDZ2 ADD2 is-cont #00 EQU ?&copy
+        .gfx-gp LDZ2 #0001 SUB2 .gfx-gp STZ2
+        !&back
+    &copy
+    .gfx-gp LDZ2 .gfx-cl STZ2
+    #0000 .gfx-gi STZ2
+    &l
+        .gfx-gi LDZ2 .gfx-cl LDZ2 LTH2 ?&b
+        JMP2r
+        &b
+        .gfx-slo LDZ2 .gfx-gi LDZ2 ADD2 ;wd-buf ADD2 LDA
+        ;clip .gfx-gi LDZ2 ADD2 STA
+        .gfx-gi LDZ2 INC2 .gfx-gi STZ2
+        !&l
+
+@gfx-paste ( -- )
+    #0000 .gfx-gi STZ2
+    &l
+        .gfx-gi LDZ2 .gfx-cl LDZ2 LTH2 ?&b
+        JMP2r
+        &b
+        ;clip .gfx-gi LDZ2 ADD2 LDA insert-byte
+        .gfx-gi LDZ2 INC2 .gfx-gi STZ2
+        !&l
+
 ( ===== modes saisie / aide / confirmation ===== )
 
 @gfx-on-mode ( -> )
     .gfx-mode LDZ #01 EQU #00 EQU ?&k0 !gfx-on-toc &k0
     .gfx-mode LDZ #04 EQU #00 EQU ?&k1 !gfx-on-quit &k1
     .gfx-mode LDZ #05 EQU #00 EQU ?&k2 !gfx-on-help &k2
+    .gfx-mode LDZ #08 EQU #00 EQU ?&kx !gfx-on-repl &kx
+    .gfx-mode LDZ #09 EQU #00 EQU ?&kn !gfx-on-notice &kn
     !gfx-on-input
 
 ( --- quitter avec confirmation si modifie --- )
@@ -349,6 +480,13 @@ JMP2r
     quit-clean
 JMP2r
 
+@gfx-on-notice ( -> )
+    .Controller/key DEI #00 EQU ?&ret
+    #00 .gfx-mode STZ
+    gfx-render
+    &ret
+BRK
+
 @gfx-on-quit ( -> )
     .Controller/key DEI .gfx-tb STZ
     .gfx-tb LDZ #00 EQU #00 EQU ?&k0 BRK &k0
@@ -359,6 +497,131 @@ JMP2r
         .gfx-tb LDZ #53 EQU #00 EQU ?&k5 save-file quit-saved BRK &k5 &k3
     #00 .gfx-mode STZ
     gfx-render
+BRK
+
+( ===== remplacer : Ctrl+R =====
+| mode 6 = champ "chercher" (gfx-inp), mode 7 = champ "remplacer par"
+| (les deux tampons sont echanges pour reutiliser la saisie : gfx-inp
+| contient alors le texte de remplacement, gfx-rep la requete), mode 8 =
+| confirmation occurrence par occurrence. Les remplacements passent par
+| del-one/insert-byte : ils sont donc annulables. )
+@gfx-swap-buf ( -- )
+    #00 .gfx-ic STZ
+    &l
+        .gfx-ic LDZ #24 LTH ?&b
+        JMP2r
+        &b
+        ;gfx-inp #00 .gfx-ic LDZ ADD2 LDA
+        ;gfx-rep #00 .gfx-ic LDZ ADD2 LDA
+        ;gfx-inp #00 .gfx-ic LDZ ADD2 STA
+        ;gfx-rep #00 .gfx-ic LDZ ADD2 STA
+        .gfx-ic LDZ INC .gfx-ic STZ
+        !&l
+
+@gfx-open-repl ( -- )
+    gfx-sel-clear
+    .gfx-qok LDZ #00 EQU #00 EQU ?&kq #00 ;gfx-inp STA &kq
+    #01 .gfx-qok STZ
+    #06 .gfx-mode STZ
+    #00 .gfx-nf STZ
+    gfx-render
+JMP2r
+
+( Entree dans le champ "chercher" : requete non vide => champ suivant )
+@gfx-repl-with ( -- )
+    ;gfx-inp LDA #00 EQU ?&ret
+    gfx-swap-buf
+    #07 .gfx-mode STZ
+    gfx-render
+    &ret
+JMP2r
+
+( Entree dans "remplacer par" : rend les tampons, cherche la 1re occurrence )
+@gfx-repl-begin ( -- )
+    gfx-swap-buf
+    #0000 .gfx-gn STZ2
+    gfx-find-from ?&found
+    #0000 .wd-cursor STZ2
+    gfx-find-from ?&found
+    #01 .gfx-nf STZ
+    #06 .gfx-mode STZ
+    gfx-render
+    JMP2r
+    &found
+    #08 .gfx-mode STZ
+    clamp-scroll
+    gfx-render
+JMP2r
+
+( -- flag : occurrence a partir du curseur INCLUS, sans reboucler )
+@gfx-find-from
+    ;gfx-inp LDA #00 EQU ?&no
+    .wd-cursor LDZ2 .gfx-sq STZ2
+    &loop
+        .gfx-sq LDZ2 .wd-buflen LDZ2 LTH2 ?&chk
+        !&no
+        &chk
+        .gfx-sq LDZ2 gfx-match-at ?&hit
+        .gfx-sq LDZ2 INC2 .gfx-sq STZ2
+        !&loop
+    &hit
+    .gfx-sq LDZ2 .wd-cursor STZ2
+    #01 JMP2r
+    &no
+    #00
+JMP2r
+
+( remplace l'occurrence sous le curseur par gfx-rep, curseur apres )
+@gfx-replace-here ( -- )
+    .wd-cursor LDZ2 #00 ;gfx-inp LDA ADD2 .wd-cursor STZ2
+    ;gfx-inp LDA .gfx-ic STZ
+    &d
+        .gfx-ic LDZ #00 EQU ?&dd
+        del-one
+        .gfx-ic LDZ #01 SUB .gfx-ic STZ
+        !&d
+    &dd
+    #01 .gfx-ic STZ
+    &i
+        .gfx-ic LDZ ;gfx-rep LDA GTH ?&id
+        ;gfx-rep #00 .gfx-ic LDZ ADD2 LDA insert-byte
+        .gfx-ic LDZ INC .gfx-ic STZ
+        !&i
+    &id
+    .gfx-gn LDZ2 INC2 .gfx-gn STZ2
+    #01 .wd-dirty STZ
+JMP2r
+
+( apres y / n : occurrence suivante ou fin avec le nombre de remplacements )
+@gfx-repl-next ( -- )
+    gfx-find-from ?&more
+    #03 .gfx-mode STZ
+    #02 .gfx-nf STZ
+    clamp-scroll
+    gfx-render
+    JMP2r
+    &more
+    clamp-scroll
+    gfx-render
+JMP2r
+
+@gfx-on-repl ( -> )
+    .Controller/key DEI .gfx-tb STZ
+    .gfx-tb LDZ #00 EQU ?&ret
+    .gfx-tb LDZ #1b EQU #00 EQU ?&k1 gfx-input-close BRK &k1
+    .gfx-tb LDZ #79 EQU #00 EQU ?&k2 gfx-replace-here gfx-repl-next BRK &k2
+    .gfx-tb LDZ #6e EQU #00 EQU ?&k3 .wd-cursor LDZ2 INC2 .wd-cursor STZ2 gfx-repl-next BRK &k3
+    .gfx-tb LDZ #61 EQU #00 EQU ?&k4
+        &all
+        gfx-replace-here
+        gfx-find-from ?&all
+        #03 .gfx-mode STZ
+        #02 .gfx-nf STZ
+        clamp-scroll
+        gfx-render
+        BRK
+    &k4
+    &ret
 BRK
 
 ( --- aide --- )
@@ -395,6 +658,7 @@ BRK
 
 ( --- ligne de saisie : aller a la ligne / recherche --- )
 @gfx-open-goto ( -- )
+    gfx-sel-clear
     #00 ;gfx-inp STA
     #00 .gfx-qok STZ
     #02 .gfx-mode STZ
@@ -403,6 +667,7 @@ BRK
 JMP2r
 
 @gfx-open-find ( -- )
+    gfx-sel-clear
     .gfx-qok LDZ #00 EQU #00 EQU ?&kq #00 ;gfx-inp STA &kq
     #01 .gfx-qok STZ
     #03 .gfx-mode STZ
@@ -411,6 +676,7 @@ JMP2r
 JMP2r
 
 @gfx-input-close ( -- )
+    .gfx-mode LDZ #07 EQU #00 EQU ?&ns gfx-swap-buf &ns
     #00 .gfx-mode STZ
     clamp-scroll
     gfx-render
@@ -455,6 +721,8 @@ JMP2r
 BRK
 
 @gfx-input-submit ( -- )
+    .gfx-mode LDZ #06 EQU #00 EQU ?&n6 gfx-repl-with JMP2r &n6
+    .gfx-mode LDZ #07 EQU #00 EQU ?&n7 gfx-repl-begin JMP2r &n7
     .gfx-mode LDZ #02 EQU #00 EQU ?&k0 gfx-goto-do JMP2r &k0
     gfx-find-do-next
 JMP2r
@@ -599,10 +867,15 @@ JMP2r
 @gfx-draw-prompt ( -- )
     .wd-rows LDZ2 #0001 SUB2 gfx-blank-row
     #0000 .Screen/x DEO2
+    .gfx-mode LDZ #09 EQU #00 EQU ?&m9 ;prm-big #02 draw-str .wd-buflen LDZ2 #02 draw-dec ;prm-big2 #02 draw-str JMP2r &m9
+    .gfx-mode LDZ #06 EQU #00 EQU ?&m6 ;prm-rfind #01 draw-str gfx-draw-inp ;prm-rhint #01 draw-str JMP2r &m6
+    .gfx-mode LDZ #07 EQU #00 EQU ?&m7 ;prm-rwith #01 draw-str gfx-draw-inp ;prm-rhint2 #01 draw-str JMP2r &m7
+    .gfx-mode LDZ #08 EQU #00 EQU ?&m8 ;prm-rask #02 draw-str JMP2r &m8
     .gfx-mode LDZ #02 EQU #00 EQU ?&k0 ;prm-goto #01 draw-str gfx-draw-inp JMP2r &k0
     .gfx-mode LDZ #03 EQU #00 EQU ?&k1
         ;prm-find #01 draw-str
         gfx-draw-inp
+        .gfx-nf LDZ #02 EQU #00 EQU ?&nr .gfx-gn LDZ2 #02 draw-dec ;prm-replaced #02 draw-str JMP2r &nr
         .gfx-nf LDZ #00 EQU ?&k2 ;prm-nf #02 draw-str JMP2r &k2
         ;prm-hint #01 draw-str
         JMP2r &k1
@@ -639,6 +912,14 @@ JMP2r
 
 @prm-goto "Go 20 "to 20 "line: 20 00
 @prm-find "Find: 20 00
+@prm-rfind "Replace 20 "- 20 "find: 20 00
+@prm-rhint 20 20 20 "Enter: 20 "next 20 "field 20 20 20 "Esc: 20 "cancel 00
+@prm-rwith "Replace 20 "with: 20 00
+@prm-rhint2 20 20 20 "Enter: 20 "start 20 20 20 "Esc: 20 "cancel 00
+@prm-rask "Replace? 20 20 20 "y: 20 "this 20 "one 20 20 20 "n: 20 "skip 20 20 20 "a: 20 "all 20 20 20 "Esc: 20 "stop 00
+@prm-replaced 20 "replaced 00
+@prm-big "File 20 "too 20 "big, 20 "only 20 "the 20 "first 20 00
+@prm-big2 20 "bytes 20 "loaded. 20 "Saving 20 "is 20 "disabled. 20 "Press 20 "any 20 "key. 00
 @prm-hint 20 20 20 "Enter: 20 "next 20 20 20 "Up: 20 "prev 20 20 20 "Esc: 20 "close 00
 @prm-nf 20 20 20 "not 20 "found 00
 @prm-quit "Unsaved 20 "changes! 20 20 "s: 20 "save 20 "and 20 "quit 20 20 20 "y: 20 "quit 20 "without 20 "saving 20 20 20 "other 20 "key: 20 "cancel 00
@@ -650,6 +931,8 @@ JMP2r
     "Ctrl+S 20 20 20 20 20 20 20 20 20 20 20 20 20 "Save 20 "(only 20 "when 20 "a 20 "file 20 "name 20 "was 20 "given) 00
     "Ctrl+Q 20 20 20 20 20 20 20 20 20 20 20 20 20 "Quit, 20 "asks 20 "first 20 "if 20 "there 20 "are 20 "unsaved 20 "changes 00
     "Ctrl+F 20 20 20 20 20 20 20 20 20 20 20 20 20 "Find: 20 "Enter 20 "next, 20 "Up 20 "previous, 20 "Esc 20 "close 00
+    "Ctrl+R 20 20 20 20 20 20 20 20 20 20 20 20 20 "Replace: 20 "y 20 "this 20 "one, 20 "n 20 "skip, 20 "a 20 "all 00
+    "Ctrl+Z 20 "/ 20 "Ctrl+Y 20 20 20 20 "Undo 20 "/ 20 "redo 00
     "Ctrl+G 20 20 20 20 20 20 20 20 20 20 20 20 20 "Go 20 "to 20 "line 00
     "Ctrl+T 20 20 20 20 20 20 20 20 20 20 20 20 20 "Table 20 "of 20 "contents 20 "(Up/Down, 20 "Enter, 20 "Esc) 00
     "Ctrl+D 20 20 20 20 20 20 20 20 20 20 20 20 20 "Dark 20 "/ 20 "light 20 "theme 00
@@ -658,6 +941,8 @@ JMP2r
     "Arrows 20 20 20 20 20 20 20 20 20 20 20 20 20 "Move 20 20 20 "(Home: 20 "line 20 "start, 20 20 "Ctrl+E: 20 "line 20 "end) 00
     "Ctrl+Up 20 "/ 20 "Down 20 20 20 20 20 "Page 20 "up 20 "/ 20 "page 20 "down 00
     "Ctrl+Home 20 20 20 20 20 20 20 20 20 20 "Start 20 "of 20 "the 20 "document 00
+    "Shift+arrows 20 20 20 20 20 20 20 "Select 20 "(left 20 "Shift 20 "only), 20 "Ctrl+A 20 "select 20 "all 00
+    "Ctrl+C 20 "/ 20 "X 20 "/ 20 "V 20 20 20 20 20 "Copy 20 "/ 20 "cut 20 "/ 20 "paste 20 "(internal 20 "clipboard, 20 "512 20 "bytes) 00
     "Delete, 20 "Backspace 20 20 "Erase 20 "forward 20 "/ 20 "backward 00
     20 00
     "Press 20 "any 20 "key 20 "to 20 "close 20 "this 20 "help 00
@@ -665,15 +950,15 @@ JMP2r
 
 @gfx-apply-theme ( -- )
     .gfx-dark LDZ ?&k0 !&light &k0
-    #0fff .System/r DEO2
-    #0f0f .System/g DEO2
-    #0f00 .System/b DEO2
+    #0ff0 .System/r DEO2
+    #0f0e .System/g DEO2
+    #0f0e .System/b DEO2
 JMP2r
     &light
-    ( 0 fond blanc, 1 texte noir, 2 titre rouge sombre, 3 curseur bleu )
+    ( 0 fond blanc, 1 texte noir, 2 titre rouge sombre, 3 marques bleu )
     #f0b0 .System/r DEO2
-    #f000 .System/g DEO2
-    #f00d .System/b DEO2
+    #f005 .System/g DEO2
+    #f00c .System/b DEO2
 JMP2r
 
 @gfx-toggle-theme ( -- )
@@ -777,6 +1062,7 @@ JMP2r
 JMP2r
 
 @gfx-toc-open ( -- )
+    gfx-sel-clear
     gfx-toc-count .gfx-tcnt STZ2
     .gfx-tcnt LDZ2 #0000 EQU2 ?&k0
         #01 .gfx-mode STZ
@@ -1067,6 +1353,9 @@ JMP2r
 | la boucle principale (voir gfx-draw-cursor). )
 @gfx-render ( -- )
     compute-layout
+    #ffff .wd-mline STZ2
+    #0000 .wd-mend STZ2
+    gfx-sel-range
 
     #0000 .gfx-row STZ2
     &top-margin-loop
@@ -1084,9 +1373,12 @@ JMP2r
             .gfx-lstart LDZ2 is-heading
             .gfx-lstart LDZ2 is-heading-t2t
             ORA #00 NEQ #00 EQU ?&k2 #02 .gfx-color STZ &k2
+            #00 .gfx-cmt STZ
+            .gfx-lstart LDZ2 is-comment #00 EQU ?&nc #01 .gfx-cmt STZ &nc
 
             .wd-tmp1 LDZ2 .wd-text-width LDZ2 wrap-row-end .gfx-rowend STZ2
             .wd-tmp1 LDZ2 .gfx-rowstart STZ2
+            .gfx-lstart LDZ2 .wd-tmp1 LDZ2 mark-prime
 
             ( toute la rangee ECRAN est redessinee de bout en bout, marge
             | gauche comprise (pas de "clear to end of line" cote
@@ -1099,8 +1391,20 @@ JMP2r
 
             &char-loop
                 .wd-tmp1 LDZ2 .gfx-rowend LDZ2 LTH2 #00 EQU ?&k3
+                    .gfx-color LDZ .gfx-ccol STZ
+                    .gfx-cmt LDZ #00 EQU ?&nocm #03 .gfx-ccol STZ &nocm
+                    .gfx-cmt LDZ ?&skipm
+                    .gfx-color LDZ #01 EQU #00 EQU ?&skipm
+                    .wd-tmp1 LDZ2 mark-step
+                    .wd-tmp1 LDZ2 .wd-mend LDZ2 LTH2 #00 EQU ?&skipm
+                    #03 .gfx-ccol STZ
+                    &skipm
+                    .wd-tmp1 LDZ2 .gfx-slo LDZ2 LTH2 ?&nosel
+                    .wd-tmp1 LDZ2 .gfx-shi LDZ2 LTH2 #00 EQU ?&nosel
+                    #04 .gfx-ccol STZ
+                    &nosel
                     .wd-tmp1 LDZ2 gfx-utf8-decode .gfx-consumed STZ2
-                    .gfx-color LDZ draw-char
+                    .gfx-ccol LDZ draw-char
                     .wd-tmp1 LDZ2 .gfx-consumed LDZ2 ADD2 .wd-tmp1 STZ2
                     !&char-loop &k3
 
@@ -1126,8 +1430,11 @@ JMP2r
 JMP2r
 
 @gfx-status-bar ( -- )
-    .gfx-mode LDZ #01 GTH #00 EQU ?&k0
-        .gfx-mode LDZ #05 LTH #00 EQU ?&k1 gfx-draw-prompt JMP2r &k1 &k0
+    .gfx-mode LDZ #02 LTH ?&np
+    .gfx-mode LDZ #05 EQU ?&np
+    .gfx-mode LDZ #0a LTH #00 EQU ?&np
+    gfx-draw-prompt JMP2r
+    &np
     .wd-rows LDZ2 #0001 SUB2 gfx-blank-row   ( efface les restes de l'etat precedent )
     #0000 x8 .Screen/x DEO2
     .wd-rows LDZ2 #0001 SUB2 x16 .Screen/y DEO2
@@ -1138,6 +1445,8 @@ JMP2r
     ;status-comma #01 draw-str
     .wd-cursor LDZ2 line-start .wd-cursor LDZ2 gfx-cells #0001 ADD2 #01 draw-dec
     .wd-dirty LDZ #00 NEQ #00 EQU ?&k4 ;status-dirty #01 draw-str &k4
+    .wd-trunc LDZ #00 EQU ?&nt ;status-trunc #02 draw-str &nt
+    .wd-buflen LDZ2 #b200 LTH2 ?&nf ;status-full #02 draw-str &nf
     ;status-sp #01 draw-str
     gfx-word-count #01 draw-dec
     ;status-words #01 draw-str
@@ -1167,7 +1476,7 @@ JMP2r
 | fin de ligne ou une ligne vide, ou le glyphe seul ne montre rien. )
 @gfx-cursor-bar ( -- )
     ;gfx-bar .Screen/addr DEO2
-    #03 .Screen/sprite DEOk DEO
+    #01 .Screen/sprite DEOk DEO
     .Screen/y DEI2 #0010 SUB2 .Screen/y DEO2
 JMP2r
 
@@ -1177,6 +1486,8 @@ JMP2r
 @status-sep 20 "-- 20 00
 @status-comma 2c 00
 @status-sp 20 20 00
+@status-trunc 20 "[file 20 "too 20 "big, 20 "truncated: 20 "saving 20 "disabled] 00
+@status-full 20 "[buffer 20 "full] 00
 @status-words 20 "words 00
 @status-dirty 20 "[+] 00
 

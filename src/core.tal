@@ -145,7 +145,32 @@
 @wd-tmp47       $2  ( visual-row-before : fin de rangee temporaire pendant
                     | ce meme balayage )
 
-|2800
+( --- annuler / retablir : variables --- )
+|00bf
+@wd-trunc    $1  ( 1 = le fichier etait plus gros que le tampon : il a ete TRONQUE, la sauvegarde est donc desactivee )
+
+|009c
+@wd-unorec  $1  ( 1 pendant l'application d'un annuler/retablir : rien n'est enregistre )
+@wd-ulen    $2  ( octets utilises du journal d'annulation )
+@wd-rlen    $2  ( octets utilises du journal de retablissement )
+@wd-ut      $1  ( enregistrement en cours : 1 = insertion, 2 = suppression )
+@wd-ub      $1  ( ... l'octet concerne )
+@wd-up      $2  ( ... sa position )
+@wd-uf      $1  ( ... type | 0x80 si debut de groupe )
+@wd-ua      $2  ( scratch : adresse d'enregistrement )
+@wd-uc      $2  ( scratch : derniere position )
+
+( --- marques en ligne (**gras** //italique// __souligne__ --barre--) --- )
+@wd-mend    $2  ( fin (exclue) de la marque en cours, 0 = aucune )
+@wd-mline   $2  ( debut de la ligne logique pour laquelle wd-mend est valable )
+@wd-mp      $2  ( mark-step : position testee )
+@wd-mj      $2  ( mark-step : position de recherche de la fermeture )
+@wd-mc      $1  ( mark-step : caractere de marque )
+@wd-mq      $2  ( mark-prime : debut de rangee )
+@wd-mr      $2  ( mark-prime : debut de ligne )
+@wd-mk      $2  ( mark-prime : position de parcours )
+
+|3000
 
 ( --- phase 1 : capture du premier argument (chemin de fichier) ---
 | Console/type : STD=1 (frappe normale -- signifie ICI qu'aucun
@@ -211,19 +236,34 @@ JMP2r
 
 ( --- chargement/sauvegarde fichier --- )
 @load-file ( -- )
+    #00 .wd-trunc STZ
     ;wd-fname .File/name DEO2
-    #ef00 .File/length DEO2
+    #b200 .File/length DEO2
     ;wd-buf .File/read DEO2
     .File/success DEI2 .wd-buflen STZ2
+    ( tampon rempli a ras bord : y a-t-il encore des octets dans le
+    | fichier ? Lecture d'UN octet de plus (le device File continue
+    | la ou il s'est arrete) dans clip, qui sert de scratch ici. )
+    .wd-buflen LDZ2 #b200 LTH2 ?&ok
+    #0001 .File/length DEO2
+    ;clip .File/read DEO2
+    .File/success DEI2 #0000 EQU2 ?&ok
+    #01 .wd-trunc STZ
+    &ok
 JMP2r
 
+( Un fichier tronque n'est JAMAIS reecrit : sauvegarder le debut ecraserait
+| la suite, donc une perte de donnees. L'indication reste affichee dans la
+| barre d'etat. )
 @save-file ( -- )
+    .wd-trunc LDZ ?&no
     .wd-fname-len LDZ #00 NEQ #00 EQU ?{
         ;wd-fname .File/name DEO2
         .wd-buflen LDZ2 .File/length DEO2
         ;wd-buf .File/write DEO2
         #00 .wd-dirty STZ
     }
+    &no
 JMP2r
 
 ( --- edition : deplacement du tampon plat --- )
@@ -255,12 +295,189 @@ JMP2r
 JMP2r
 
 @insert-byte ( byte -- )
+    ( tampon plein : ignore l'octet plutot que de deborder en page 0 )
+    .wd-buflen LDZ2 #b200 LTH2 ?{ POP JMP2r }
+    DUP .wd-ub STZ
+    .wd-cursor LDZ2 .wd-up STZ2
+    #01 .wd-ut STZ
+    rec-push
     STH
     shift-right
     STHr
     .wd-cursor LDZ2 ;wd-buf ADD2 STA
     .wd-cursor LDZ2 #0001 ADD2 .wd-cursor STZ2
     .wd-buflen LDZ2 #0001 ADD2 .wd-buflen STZ2
+JMP2r
+
+( --- coloration : commentaires et marques en ligne --- )
+( ligne de commentaire txt2tags : premier octet de la ligne = % )
+@is-comment ( lstart* -- flag )
+    DUP2 .wd-buflen LDZ2 LTH2 ?{ POP2 #00 JMP2r }
+    ;wd-buf ADD2 LDA #25 EQU
+JMP2r
+
+( Si pos ouvre une marque ** // __ -- (suivie d'un caractere non blanc,
+| avec une fermeture sur la meme ligne precedee d'un non blanc), fixe
+| wd-mend juste apres la fermeture. Sans effet si pos est deja dans une
+| marque. Appeler pour CHAQUE position, dans l'ordre. )
+@mark-step ( pos* -- )
+    .wd-mp STZ2
+    .wd-mp LDZ2 .wd-mend LDZ2 LTH2 ?&ret
+    .wd-mp LDZ2 #0004 ADD2 .wd-buflen LDZ2 LTH2 #00 EQU ?&ret
+    .wd-mp LDZ2 ;wd-buf ADD2 LDA .wd-mc STZ
+    .wd-mc LDZ #2a EQU ?&ok
+    .wd-mc LDZ #2f EQU ?&ok
+    .wd-mc LDZ #5f EQU ?&ok
+    .wd-mc LDZ #2d EQU ?&ok
+    !&ret
+    &ok
+    .wd-mp LDZ2 INC2 ;wd-buf ADD2 LDA .wd-mc LDZ EQU ?&o2
+    !&ret
+    &o2
+    .wd-mp LDZ2 #0002 ADD2 ;wd-buf ADD2 LDA #21 LTH ?&ret
+    .wd-mp LDZ2 #0003 ADD2 .wd-mj STZ2
+    &search
+        .wd-mj LDZ2 INC2 .wd-buflen LDZ2 LTH2 #00 EQU ?&ret
+        .wd-mj LDZ2 ;wd-buf ADD2 LDA #0a EQU ?&ret
+        .wd-mj LDZ2 ;wd-buf ADD2 LDA .wd-mc LDZ EQU #00 EQU ?&next
+        .wd-mj LDZ2 INC2 ;wd-buf ADD2 LDA .wd-mc LDZ EQU #00 EQU ?&next
+        .wd-mj LDZ2 #0001 SUB2 ;wd-buf ADD2 LDA #21 LTH ?&next
+        .wd-mj LDZ2 #0002 ADD2 .wd-mend STZ2
+        JMP2r
+        &next
+        .wd-mj LDZ2 INC2 .wd-mj STZ2
+        !&search
+    &ret
+JMP2r
+
+( Appele au debut de chaque rangee : si la ligne logique a change, rejoue
+| mark-step depuis son debut jusqu'a la rangee pour savoir si on est deja
+| a l'interieur d'une marque. Sinon l'etat est reporte d'une rangee a
+| l'autre. Remettre wd-mline a ffff au debut de chaque rendu. )
+@mark-prime ( lstart* rowstart* -- )
+    .wd-mq STZ2
+    .wd-mr STZ2
+    .wd-mr LDZ2 .wd-mline LDZ2 EQU2 ?&ret
+    .wd-mr LDZ2 .wd-mline STZ2
+    #0000 .wd-mend STZ2
+    .wd-mr LDZ2 .wd-mk STZ2
+    &l
+        .wd-mk LDZ2 .wd-mq LDZ2 LTH2 ?&body
+        JMP2r
+        &body
+        .wd-mk LDZ2 mark-step
+        .wd-mk LDZ2 INC2 .wd-mk STZ2
+        !&l
+    &ret
+JMP2r
+
+( ===== annuler / retablir =====
+| Journal d'enregistrements de 4 octets : type | 0x80 si debut de groupe,
+| position (2 octets), octet. Une frappe continue (positions voisines,
+| meme type) forme un groupe, Entree en ouvre un nouveau. Annuler depile
+| un groupe entier du journal d'annulation et l'empile sur celui de
+| retablissement ; toute nouvelle modification vide ce dernier. Journal
+| plein : l'historique est simplement oublie. )
+@rec-write ( addr* -- )
+    .wd-ua STZ2
+    .wd-uf LDZ .wd-ua LDZ2 STA
+    .wd-up LDZ2 .wd-ua LDZ2 INC2 STA2
+    .wd-ub LDZ .wd-ua LDZ2 #0003 ADD2 STA
+JMP2r
+
+@rec-read ( addr* -- )
+    .wd-ua STZ2
+    .wd-ua LDZ2 LDA .wd-uf STZ
+    .wd-ua LDZ2 INC2 LDA2 .wd-up STZ2
+    .wd-ua LDZ2 #0003 ADD2 LDA .wd-ub STZ
+JMP2r
+
+@rec-push ( -- )
+    .wd-unorec LDZ #00 EQU ?{ JMP2r }
+    .wd-ulen LDZ2 #0480 LTH2 ?{ #0000 .wd-ulen STZ2 }
+    #80 .wd-uf STZ
+    .wd-ulen LDZ2 #0000 EQU2 ?&write
+    ;ulog .wd-ulen LDZ2 ADD2 #0004 SUB2 .wd-ua STZ2
+    .wd-ua LDZ2 LDA #7f AND .wd-ut LDZ EQU ?&chk
+    !&write
+    &chk
+    .wd-ub LDZ #0a EQU ?&write
+    .wd-ua LDZ2 INC2 LDA2 .wd-uc STZ2
+    .wd-ut LDZ #01 EQU ?&ins
+    .wd-up LDZ2 .wd-uc LDZ2 EQU2 ?&cont
+    .wd-up LDZ2 INC2 .wd-uc LDZ2 EQU2 ?&cont
+    !&write
+    &ins
+    .wd-up LDZ2 .wd-uc LDZ2 INC2 EQU2 ?&cont
+    !&write
+    &cont
+    #00 .wd-uf STZ
+    &write
+    .wd-ut LDZ .wd-uf LDZ ORA .wd-uf STZ
+    ;ulog .wd-ulen LDZ2 ADD2 rec-write
+    .wd-ulen LDZ2 #0004 ADD2 .wd-ulen STZ2
+    #0000 .wd-rlen STZ2
+JMP2r
+
+( range le record courant dans l'un des deux journaux )
+@redo-store ( -- )
+    .wd-rlen LDZ2 #0480 LTH2 ?{ #0000 .wd-rlen STZ2 }
+    ;rlog .wd-rlen LDZ2 ADD2 rec-write
+    .wd-rlen LDZ2 #0004 ADD2 .wd-rlen STZ2
+JMP2r
+
+@undo-store ( -- )
+    .wd-ulen LDZ2 #0480 LTH2 ?{ #0000 .wd-ulen STZ2 }
+    ;ulog .wd-ulen LDZ2 ADD2 rec-write
+    .wd-ulen LDZ2 #0004 ADD2 .wd-ulen STZ2
+JMP2r
+
+@undo ( -- )
+    .wd-ulen LDZ2 #0000 EQU2 ?&none
+    #01 .wd-unorec STZ
+    &loop
+        .wd-ulen LDZ2 #0004 SUB2 .wd-ulen STZ2
+        ;ulog .wd-ulen LDZ2 ADD2 rec-read
+        redo-store
+        .wd-uf LDZ #7f AND #01 EQU ?&uins
+        .wd-up LDZ2 .wd-cursor STZ2
+        .wd-ub LDZ insert-byte
+        !&next
+        &uins
+        .wd-up LDZ2 INC2 .wd-cursor STZ2
+        del-one
+        &next
+        .wd-uf LDZ #80 AND ?&done
+        .wd-ulen LDZ2 #0000 EQU2 ?&done
+        !&loop
+    &done
+    #00 .wd-unorec STZ
+    #01 .wd-dirty STZ
+    &none
+JMP2r
+
+@redo ( -- )
+    .wd-rlen LDZ2 #0000 EQU2 ?&none
+    #01 .wd-unorec STZ
+    &loop
+        .wd-rlen LDZ2 #0004 SUB2 .wd-rlen STZ2
+        ;rlog .wd-rlen LDZ2 ADD2 rec-read
+        undo-store
+        .wd-uf LDZ #7f AND #01 EQU ?&rins
+        .wd-up LDZ2 INC2 .wd-cursor STZ2
+        del-one
+        !&next
+        &rins
+        .wd-up LDZ2 .wd-cursor STZ2
+        .wd-ub LDZ insert-byte
+        &next
+        .wd-rlen LDZ2 #0000 EQU2 ?&done
+        ;rlog .wd-rlen LDZ2 ADD2 #0004 SUB2 LDA #80 AND ?&done
+        !&loop
+    &done
+    #00 .wd-unorec STZ
+    #01 .wd-dirty STZ
+    &none
 JMP2r
 
 ( octet 0x80-0xbf = continuation UTF-8, jamais le debut d'un caractere )
@@ -270,6 +487,10 @@ JMP2r
 
 ( retire l'octet juste avant le curseur, un seul )
 @del-one ( -- )
+    .wd-cursor LDZ2 #0001 SUB2 .wd-up STZ2
+    .wd-up LDZ2 ;wd-buf ADD2 LDA .wd-ub STZ
+    #02 .wd-ut STZ
+    rec-push
     shift-left
     .wd-buflen LDZ2 #0001 SUB2 .wd-buflen STZ2
     .wd-cursor LDZ2 #0001 SUB2 .wd-cursor STZ2
@@ -880,13 +1101,14 @@ JMP2r
 @ini-key-margin-cols "margin_cols 00
 @ini-key-margin-rows "margin_rows 00
 
-( |4000/|4100 : voir la note en tete de fichier sur les adresses fixes.
-| wd-buf plus petit qu'a l'origine (0xbe00 = ~46.7 Ko au lieu de
-| 0xeb00 = ~57.5 Ko) pour laisser de la place au code partage +
-| au code propre a chaque entree entre |0100 et ici -- toujours tres
-| au-dela de la taille reelle de ce portage, voir make test/make
-| rom-gfx pour verifier qu'aucun `.rom.sym` n'atterrit dans une plage
-| reservee. )
-|3f00 @wd-arg2 $20
-|4000 @wd-fname $100
-|4100 @wd-buf $be00
+( CARTE MEMOIRE : code propre a l'entree |0100-, code partage |3000-
+| (environ 0xf00 octets), puis les donnees ci-dessous. `make layout`
+| verifie que le code ne deborde ni sur |3000 (entree graphique) ni sur
+| |4000 (partage) : uxnasm ne signale PAS un chevauchement (piege #13).
+| wd-buf = 0xb200 octets (~45 Ko), jusqu'a |ff00. )
+|4000 @ulog $480
+|4480 @rlog $480
+|4900 @clip $200
+|4b00 @wd-arg2 $20
+|4c00 @wd-fname $100
+|4d00 @wd-buf $b200

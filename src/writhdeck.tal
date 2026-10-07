@@ -38,6 +38,9 @@
 |0020
 @wd-esc-state   $1  ( 0=idle 1=vu ESC 2=vu ESC[ )
 @wd-dcount      $1  ( wd-print-dec : nombre de chiffres empiles sur rst )
+@wd-hl         $1  ( 1 = la rangee en cours colore les marques en ligne )
+@wd-inm         $1  ( 1 = on est actuellement dans une marque )
+@wd-mst         $1  ( scratch : nouvel etat de marque )
 @wd-confirm     $1  ( 1 = confirmation de sortie en attente, voir try-quit )
 @wd-tmp34       $2  ( partage wd-render/render-row (rendu console) : fin
                     | de la rangee affichee -- wd-render la calcule
@@ -152,6 +155,8 @@ BRK
     DUP #1b EQU #00 EQU ?{ POP #01 .wd-esc-state STZ BRK }
     DUP #11 EQU #00 EQU ?{ POP try-quit BRK }
     DUP #13 EQU #00 EQU ?{ POP save-file wd-render BRK }
+    DUP #1a EQU #00 EQU ?{ POP undo after-edit BRK }
+    DUP #19 EQU #00 EQU ?{ POP redo after-edit BRK }
     DUP #0d EQU #00 EQU ?{ POP #0a insert-byte after-edit BRK }
     DUP #0a EQU #00 EQU ?{ POP #0a insert-byte after-edit BRK }
     DUP #7f EQU #00 EQU ?{ POP backspace after-edit BRK }
@@ -233,6 +238,17 @@ JMP2r
 @render-row ( -- )
     &loop
         .wd-tmp1 LDZ2 .wd-tmp34 LDZ2 LTH2 #00 EQU ?{
+            .wd-hl LDZ #00 EQU ?&plain
+            .wd-tmp1 LDZ2 mark-step
+            .wd-tmp1 LDZ2 .wd-mend LDZ2 LTH2 .wd-mst STZ
+            .wd-mst LDZ .wd-inm LDZ EQU ?&plain
+            .wd-mst LDZ .wd-inm STZ
+            .wd-mst LDZ #00 EQU ?&off
+            ansi-mark-on
+            !&plain
+            &off
+            ansi-reset
+            &plain
             .wd-tmp1 LDZ2 ;wd-buf ADD2 LDA putc
             .wd-tmp1 LDZ2 #0001 ADD2 .wd-tmp1 STZ2
             !&loop }
@@ -244,6 +260,8 @@ JMP2r
 | bas (rangees vides jusqu'a juste avant la barre de statut). )
 @wd-render ( -- )
     hide-cursor
+    #ffff .wd-mline STZ2
+    #0000 .wd-mend STZ2
     reset-cursor
     compute-layout
 
@@ -274,6 +292,15 @@ JMP2r
             .wd-tmp35 LDZ2 is-heading
             .wd-tmp35 LDZ2 is-heading-t2t
             ORA #00 NEQ #00 EQU ?{ ansi-heading-on }
+            ( marques en ligne seulement hors titres et commentaires )
+            #00 .wd-hl STZ
+            #00 .wd-inm STZ
+            .wd-tmp35 LDZ2 is-heading .wd-tmp35 LDZ2 is-heading-t2t ORA ?&nothl
+            .wd-tmp35 LDZ2 is-comment ?&nothl
+            #01 .wd-hl STZ
+            &nothl
+            .wd-tmp35 LDZ2 is-comment #00 EQU ?&notcm ansi-comment-on &notcm
+            .wd-tmp35 LDZ2 .wd-tmp1 LDZ2 mark-prime
             .wd-tmp1 LDZ2 .wd-text-width LDZ2 wrap-row-end .wd-tmp34 STZ2
             render-row
             ansi-reset
@@ -315,6 +342,8 @@ JMP2r
     ;status-comma str-log
     .wd-cursor LDZ2 .wd-cursor LDZ2 line-start SUB2 #0001 ADD2 wd-print-dec
     .wd-dirty LDZ #00 NEQ #00 EQU ?{ ;status-dirty str-log }
+    .wd-trunc LDZ #00 EQU ?&nt ;status-trunc str-log &nt
+    .wd-buflen LDZ2 #b200 LTH2 ?&nf ;status-full str-log &nf
     clear-eol
     ansi-reset
 JMP2r
@@ -383,6 +412,8 @@ JMP2r
 @ansi-reverse ( -- ) ;ansi-reverse-seq str-log JMP2r
 @ansi-reset ( -- ) ;ansi-reset-seq str-log JMP2r
 @ansi-heading-on ( -- ) ;ansi-heading-seq str-log JMP2r
+@ansi-comment-on ( -- ) ;ansi-comment-seq str-log JMP2r
+@ansi-mark-on ( -- ) ;ansi-mark-seq str-log JMP2r
 
 @ansi-alt-buf-on [ 1b "[?1049h 00 ]
 @ansi-alt-buf-off [ 1b "[?1049l 00 ]
@@ -396,6 +427,8 @@ JMP2r
 | (ui_seq_attr_heading, src/ui_ansi.asm) -- pas de gras, ce port ne
 | combine pas plusieurs attributs SGR. )
 @ansi-heading-seq [ 1b "[31m 00 ]
+@ansi-comment-seq [ 1b "[32m 00 ]
+@ansi-mark-seq [ 1b "[36m 00 ]
 
 @msg-quit "Unsaved 20 "changes! 20 20 "s: 20 "save 20 "and 20 "quit 20 20 "y: 20 "quit 20 "without 20 "saving 20 20 "other 20 "key: 20 "cancel 00
 @msg-quit-draft "Unsaved 20 "draft! 20 20 "y: 20 "quit 20 "without 20 "saving 20 20 "other 20 "key: 20 "cancel 00
@@ -403,6 +436,8 @@ JMP2r
 @status-sep 20 "-- 20 00
 @status-comma 2c 00
 @status-dirty 20 "[+] 00
+@status-trunc 20 "[file 20 "too 20 "big, 20 "truncated: 20 "saving 20 "disabled] 00
+@status-full 20 "[buffer 20 "full] 00
 
 @wd-meta [ $1
     "writhdeck-uxn 0a

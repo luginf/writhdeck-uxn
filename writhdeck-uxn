@@ -44,6 +44,17 @@ while [ $# -gt 0 ]; do
     shift
 done
 
+# rebuild the rom when a source is newer than it (or it is missing)
+stale() {
+    [ ! -f "$1" ] || [ -n "$(find "$DIR/src" -name '*.tal' -newer "$1" 2>/dev/null | head -n 1)" ]
+}
+ensure_rom() {
+    if stale "$1"; then
+        echo "writhdeck-uxn: rebuilding $(basename "$1")" >&2
+        make -s -C "$DIR" "$2" >&2 || { echo "writhdeck-uxn: build failed (is uxnasm installed?)" >&2; exit 1; }
+    fi
+}
+
 if [ -n "$FILE" ]; then
     case "$FILE" in
         */*) cd "$(dirname "$FILE")" || exit 1; FILE=$(basename "$FILE") ;;
@@ -53,7 +64,7 @@ fi
 if [ "$MODE" = cli ]; then
     [ -n "$SIZE$ZOOM$LIGHT" ] && echo "writhdeck-uxn: --size/--zoom/--light ignored in terminal mode" >&2
     ROM=$DIR/bin/writhdeck.rom
-    [ -f "$ROM" ] || { echo "writhdeck-uxn: $ROM missing (make rom)" >&2; exit 1; }
+    ensure_rom "$ROM" rom
     TTY=`stty -g`
     stty -ignbrk -brkint -ignpar -parmrk -inpck -istrip -inlcr -igncr -icrnl -ixon \
          -ixoff -icanon onlcr -echo -isig -iuclc -ixany -imaxbel -xcase min 1 time 0
@@ -64,7 +75,7 @@ if [ "$MODE" = cli ]; then
 fi
 
 ROM=$DIR/bin/writhdeck-gfx.rom
-[ -f "$ROM" ] || { echo "writhdeck-uxn: $ROM missing (make rom-gfx)" >&2; exit 1; }
+ensure_rom "$ROM" rom-gfx
 case "$SIZE" in
     ""|[0-9]*x[0-9]*) ;;
     *) echo "writhdeck-uxn: invalid size '$SIZE' (expected WIDTHxHEIGHT)" >&2; exit 2 ;;

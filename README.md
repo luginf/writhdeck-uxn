@@ -130,7 +130,11 @@ and `uxnemu` keeps F11 for fullscreen, so everything is Ctrl+letter;
 | Ctrl+S | Save (only when a file name was given) |
 | Ctrl+Q | Quit; **asks for confirmation** if there are unsaved changes (`s` save and quit, `y` quit without saving, any other key cancels) |
 | Ctrl+F | Find, case-insensitive for ASCII: type, Enter = next, Up = previous, Down = next, Esc closes; wraps around; the last query is kept |
+| Ctrl+R | Replace: type what to find, Enter, type the replacement, Enter, then `y` replace this one, `n` skip, `a` replace all, Esc stop |
 | Ctrl+G | Go to line number |
+| Ctrl+Z / Ctrl+Y | Undo / redo (typing runs and Backspace runs are undone as one group; also in the console build) |
+| Shift+arrows | Select text (left Shift only: that is all the Controller reports), shown in inverse video; Ctrl+A selects all, Esc or any plain move clears |
+| Ctrl+C / Ctrl+X / Ctrl+V | Copy / cut / paste. The clipboard is internal (512 bytes max): uxn cannot reach the system clipboard. Typing, Enter, Backspace and Delete replace or erase the selection |
 | Ctrl+T | Table of contents: headings indented by level, Up/Down, Enter jumps, Esc cancels |
 | Ctrl+D | Dark / light theme (start light with `-l`) |
 | Ctrl+H | Help |
@@ -149,6 +153,20 @@ typed at a terminal that sends them — so accented/non-ASCII characters
 can be typed directly, not just displayed from a pre-existing file.
 
 ## Syntax highlighting
+
+Besides headings (red), both builds colour:
+
+- **Comments**: a line starting with `%` — green in the console. The
+  graphical Screen device only has 4 colours in total (background, text,
+  heading, accent), so comments share the accent colour (cyan, blue in the
+  light theme) with the inline marks below.
+- **Inline marks** `**bold**`, `//italic//`, `__underline__`, `--strike--`:
+  the whole span including the markers is cyan (blue in the light theme).
+  A mark needs a non-blank character right after the opening pair and a
+  closing pair on the same line preceded by a non-blank, so ` -- ` or a
+  lone `**` stay plain. Spans that wrap over several visual rows keep
+  their colour.
+
 
 Two heading styles are detected and rendered in red (ANSI `ESC[31m`),
 same color as `writhdeck-asm`'s `UI_ATTR_HEADING` — the whole logical
@@ -306,6 +324,35 @@ limitations".
 builds a scripted copy of `uxn2.c` (no SDL window, so no focus stealing;
 the upstream File bug is patched in that copy) and replays commands
 (`frame`, `key text`, `ctrl q`, `btn 0x20`, `enter`, `bksp`, `shot out.png`).
+
+## File size limit
+
+The whole document lives in one flat buffer of 0xB200 bytes (45,568 bytes,
+about 45 KB). A bigger file is loaded **truncated, and saving is then
+disabled** so the original is never overwritten with only its beginning:
+the graphical build shows a notice at start-up (any key closes it) and
+both builds keep `[file too big, truncated: saving disabled]` in the status
+bar. Edit and copy what you need, but split the file to save. When typing
+fills the buffer, `[buffer full]` appears and extra input is ignored. A
+file of exactly 45,568 bytes is not flagged. Very long single lines (tens of
+KB without a newline) make word-wrap slow.
+
+## Ideas / roadmap
+
+- **Documents larger than 64 KB via Varvara expansion banks** (not done).
+  Varvara has up to 16 banks of 64 KB (`System/expansion`: fill, copy
+  to/from a bank; `uxncli`, `uxnemu` and `uxn2` implement it) but the CPU
+  cannot address them, only copy blocks between a bank and normal RAM. It
+  would need 24-bit positions and a paged buffer (a window in RAM plus
+  swapping blocks, or a gap buffer / piece table), and every routine that
+  reads the buffer (`line-end`, word-wrap, search, marks, TOC, word count)
+  would go through a "byte at position N" accessor. The File device reads
+  and writes in chunks of at most 65,535 bytes, so loading and saving a
+  large file is the easy part. Expect a rewrite of most of `core.tal` and a
+  noticeable slowdown. Cheaper intermediate step: reclaim RAM to enlarge the
+  buffer from 45 KB to roughly 50-55 KB.
+- Port the newer graphical keys (find, replace, go to line, selection) to
+  the console build.
 
 ## Known limitations
 
