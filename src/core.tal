@@ -145,6 +145,39 @@
 @wd-tmp47       $2  ( visual-row-before : fin de rangee temporaire pendant
                     | ce meme balayage )
 
+( --- moteur partage (ed-*) : variables, page zero |00c0-|00f3 --- )
+|00c0
+@ed-sel        $2  ( ancre de la selection, ffff = aucune )
+@ed-slo        $2  ( debut de la selection, calcule par ed-sel-range )
+@ed-shi        $2  ( fin exclue de la selection )
+@ed-cl         $2  ( longueur du presse-papiers )
+@ed-tsel       $2  ( TOC : index du titre selectionne )
+@ed-tcnt       $2  ( TOC : nombre de titres )
+@ed-tn         $2  ( ed-toc-nth : index cherche )
+@ed-tp         $2  ( TOC : position de parcours du tampon )
+@ed-ti         $2  ( TOC : compteur de titres )
+@ed-tpos       $2  ( ed-toc-nth : debut de ligne du titre trouve )
+@ed-tq         $2  ( ed-is-heading : scratch )
+@ed-ts         $2  ( ed-toc-bounds : debut du texte du titre )
+@ed-te         $2  ( ed-toc-bounds : fin du texte du titre )
+@ed-tlv        $1  ( ed-toc-bounds : niveau du titre )
+@ed-tb         $1  ( TOC : octet courant )
+@ed-si         $1  ( ed-match-at : index dans la requete )
+@ed-sp         $2  ( ed-match-at : position testee )
+@ed-sk         $2  ( recherche : compteur d'essais )
+@ed-sq         $2  ( recherche : position candidate )
+@ed-gn         $2  ( aller a la ligne : numero demande )
+@ed-gp         $2  ( aller a la ligne : position )
+@ed-gi         $2  ( aller a la ligne : numero de ligne courant )
+@ed-pgn        $2  ( page haut/bas : rangees restantes )
+@ed-wc         $2  ( compteur de mots )
+@ed-wp         $2  ( compteur de mots : position )
+@ed-win        $1  ( compteur de mots : dans un mot )
+@ed-ic         $1  ( saisie : index )
+@ed-ib         $1  ( saisie : octet courant )
+@ed-qok        $1  ( 1 si ed-qry contient la derniere requete de recherche )
+@ed-nf         $1  ( recherche : 1 si rien trouve )
+
 ( --- annuler / retablir : variables --- )
 |00bc
 @wd-cwn      $1  ( entry-cw : octets du caractere )
@@ -174,7 +207,7 @@
 @wd-mr      $2  ( mark-prime : debut de ligne )
 @wd-mk      $2  ( mark-prime : position de parcours )
 
-|2900
+|2200
 
 ( --- phase 1 : capture du premier argument (chemin de fichier) ---
 | Console/type : STD=1 (frappe normale -- signifie ICI qu'aucun
@@ -1118,11 +1151,371 @@ JMP2r
 @ini-key-margin-cols "margin_cols 00
 @ini-key-margin-rows "margin_rows 00
 
+( ===== moteur partage : selection, presse-papiers, recherche, remplacement,
+| aller a la ligne, compteur de mots, table des matieres (balayage), saisie
+| d'une ligne. Deplace de l'entree graphique pour que la console s'en serve
+| aussi : AUCUN affichage ici, seulement des variables et du tampon. )
+@ed-sel-all-engine ( -- )
+    #0000 .ed-sel STZ2
+    .wd-buflen LDZ2 .wd-cursor STZ2
+JMP2r
+
+@ed-goto-line ( -- )
+    ( cherche la ligne dont le numero est dans la saisie ed-qry ; place le curseur )
+    #0000 .ed-gn STZ2
+    #01 .ed-ic STZ
+    &parse
+        .ed-ic LDZ ;ed-qry LDA GTH #00 EQU ?&k1 !&parsed &k1
+        .ed-gn LDZ2 #000a MUL2
+        #00 ;ed-qry #00 .ed-ic LDZ ADD2 LDA #30 SUB ADD2
+        .ed-gn STZ2
+        .ed-ic LDZ INC .ed-ic STZ
+        !&parse
+    &parsed
+    #0000 .ed-gp STZ2
+    #0001 .ed-gi STZ2
+    &find
+        .ed-gi LDZ2 .ed-gn LDZ2 LTH2 ?&k2 !&found &k2
+        .ed-gp LDZ2 line-end
+        DUP2 .wd-buflen LDZ2 LTH2 ?&k3 POP2 !&found &k3
+        INC2 .ed-gp STZ2
+        .ed-gi LDZ2 INC2 .ed-gi STZ2
+        !&find
+    &found
+    .ed-gp LDZ2 .wd-cursor STZ2
+JMP2r
+
+@ed-sel-clear ( -- )
+    #ffff .ed-sel STZ2
+JMP2r
+
+@ed-sel-active ( -- flag )
+    .ed-sel LDZ2 #ffff EQU2 ?&no
+    .ed-sel LDZ2 .wd-cursor LDZ2 EQU2 ?&no
+    #01 JMP2r
+    &no
+    #00
+JMP2r
+
+@ed-sel-range ( -- )
+    #0000 .ed-slo STZ2
+    #0000 .ed-shi STZ2
+    ed-sel-active ?&on
+    JMP2r
+    &on
+    .ed-sel LDZ2 .wd-cursor LDZ2 LTH2 ?&fwd
+    .wd-cursor LDZ2 .ed-slo STZ2
+    .ed-sel LDZ2 .ed-shi STZ2
+    JMP2r
+    &fwd
+    .ed-sel LDZ2 .ed-slo STZ2
+    .wd-cursor LDZ2 .ed-shi STZ2
+JMP2r
+
+( supprime le texte selectionne s'il y en a un )
+@ed-sel-eat ( -- )
+    ed-sel-active ?&on
+    ed-sel-clear
+    JMP2r
+    &on
+    ed-sel-range
+    .ed-shi LDZ2 .wd-cursor STZ2
+    .ed-shi LDZ2 .ed-slo LDZ2 SUB2 .ed-gp STZ2
+    &l
+        .ed-gp LDZ2 #0000 EQU2 ?&done
+        del-one
+        .ed-gp LDZ2 #0001 SUB2 .ed-gp STZ2
+        !&l
+    &done
+    ed-sel-clear
+JMP2r
+
+@ed-copy ( -- )
+    ed-sel-active ?&on
+    JMP2r
+    &on
+    ed-sel-range
+    .ed-shi LDZ2 .ed-slo LDZ2 SUB2 .ed-gp STZ2
+    .ed-gp LDZ2 #01fe LTH2 ?&fit
+    #01fe .ed-gp STZ2
+    &fit
+    ( ne coupe jamais un caractere UTF-8 en deux )
+    &back
+        .ed-gp LDZ2 #0000 EQU2 ?&copy
+        .ed-slo LDZ2 .ed-gp LDZ2 ADD2 is-cont #00 EQU ?&copy
+        .ed-gp LDZ2 #0001 SUB2 .ed-gp STZ2
+        !&back
+    &copy
+    .ed-gp LDZ2 .ed-cl STZ2
+    #0000 .ed-gi STZ2
+    &l
+        .ed-gi LDZ2 .ed-cl LDZ2 LTH2 ?&b
+        JMP2r
+        &b
+        .ed-slo LDZ2 .ed-gi LDZ2 ADD2 ;wd-buf ADD2 LDA
+        ;clip .ed-gi LDZ2 ADD2 STA
+        .ed-gi LDZ2 INC2 .ed-gi STZ2
+        !&l
+
+@ed-paste ( -- )
+    #0000 .ed-gi STZ2
+    &l
+        .ed-gi LDZ2 .ed-cl LDZ2 LTH2 ?&b
+        JMP2r
+        &b
+        ;clip .ed-gi LDZ2 ADD2 LDA insert-byte
+        .ed-gi LDZ2 INC2 .ed-gi STZ2
+        !&l
+
+( -- flag : occurrence a partir du curseur INCLUS, sans reboucler )
+@ed-find-from
+    ;ed-qry LDA #00 EQU ?&no
+    .wd-cursor LDZ2 .ed-sq STZ2
+    &loop
+        .ed-sq LDZ2 .wd-buflen LDZ2 LTH2 ?&chk
+        !&no
+        &chk
+        .ed-sq LDZ2 ed-match-at ?&hit
+        .ed-sq LDZ2 INC2 .ed-sq STZ2
+        !&loop
+    &hit
+    .ed-sq LDZ2 .wd-cursor STZ2
+    #01 JMP2r
+    &no
+    #00
+JMP2r
+
+( --- recherche, sans distinction majuscule/minuscule ASCII --- )
+@ed-fold ( b -- b' )
+    DUP #41 SUB #1a LTH ?&k0 JMP2r &k0
+    #20 ADD
+JMP2r
+
+( pos* -- flag : la requete ed-qry est-elle presente a pos )
+@ed-match-at
+    .ed-sp STZ2
+    #00 .ed-si STZ
+    &loop
+        .ed-si LDZ ;ed-qry LDA LTH ?&k0 #01 JMP2r &k0
+        .ed-sp LDZ2 #00 .ed-si LDZ ADD2 .wd-buflen LDZ2 LTH2 ?&k1 #00 JMP2r &k1
+        .ed-sp LDZ2 #00 .ed-si LDZ ADD2 ;wd-buf ADD2 LDA ed-fold
+        ;ed-qry #00 .ed-si LDZ INC ADD2 LDA ed-fold
+        EQU ?&k2 #00 JMP2r &k2
+        .ed-si LDZ INC .ed-si STZ
+        !&loop
+
+( -- flag : prochaine occurrence apres le curseur, avec retour au debut )
+@ed-find-next
+    ;ed-qry LDA #00 EQU ?&k0
+        #0000 .ed-sk STZ2
+        .wd-cursor LDZ2 .ed-sq STZ2
+        &loop
+            .ed-sk LDZ2 .wd-buflen LDZ2 LTH2 ?&k1 #00 JMP2r &k1
+            .ed-sq LDZ2 INC2 .wd-buflen LDZ2 LTH2 ?&k2 #0000 .ed-sq STZ2 !&chk &k2
+            .ed-sq LDZ2 INC2 .ed-sq STZ2
+            &chk
+            .ed-sq LDZ2 ed-match-at ?&k3 !&nx &k3
+            .ed-sq LDZ2 .wd-cursor STZ2
+            #01 JMP2r
+            &nx
+            .ed-sk LDZ2 INC2 .ed-sk STZ2
+            !&loop &k0
+    #00
+JMP2r
+
+@ed-find-prev
+    ;ed-qry LDA #00 EQU ?&k0
+        #0000 .ed-sk STZ2
+        .wd-cursor LDZ2 .ed-sq STZ2
+        &loop
+            .ed-sk LDZ2 .wd-buflen LDZ2 LTH2 ?&k1 #00 JMP2r &k1
+            .ed-sq LDZ2 #0000 EQU2 ?&k2 .ed-sq LDZ2 #0001 SUB2 .ed-sq STZ2 !&chk &k2
+            .wd-buflen LDZ2 #0001 SUB2 .ed-sq STZ2
+            &chk
+            .ed-sq LDZ2 ed-match-at ?&k3 !&nx &k3
+            .ed-sq LDZ2 .wd-cursor STZ2
+            #01 JMP2r
+            &nx
+            .ed-sk LDZ2 INC2 .ed-sk STZ2
+            !&loop &k0
+    #00
+JMP2r
+
+( remplace l'occurrence sous le curseur par ed-rep, curseur apres )
+@ed-replace-here ( -- )
+    .wd-cursor LDZ2 #00 ;ed-qry LDA ADD2 .wd-cursor STZ2
+    ;ed-qry LDA .ed-ic STZ
+    &d
+        .ed-ic LDZ #00 EQU ?&dd
+        del-one
+        .ed-ic LDZ #01 SUB .ed-ic STZ
+        !&d
+    &dd
+    #01 .ed-ic STZ
+    &i
+        .ed-ic LDZ ;ed-rep LDA GTH ?&id
+        ;ed-rep #00 .ed-ic LDZ ADD2 LDA insert-byte
+        .ed-ic LDZ INC .ed-ic STZ
+        !&i
+    &id
+    .ed-gn LDZ2 INC2 .ed-gn STZ2
+    #01 .wd-dirty STZ
+JMP2r
+
+@ed-swap-buf ( -- )
+    #00 .ed-ic STZ
+    &l
+        .ed-ic LDZ #24 LTH ?&b
+        JMP2r
+        &b
+        ;ed-qry #00 .ed-ic LDZ ADD2 LDA
+        ;ed-rep #00 .ed-ic LDZ ADD2 LDA
+        ;ed-qry #00 .ed-ic LDZ ADD2 STA
+        ;ed-rep #00 .ed-ic LDZ ADD2 STA
+        .ed-ic LDZ INC .ed-ic STZ
+        !&l
+
+@ed-inp-push ( byte -- )
+    ;ed-qry LDA #20 LTH ?&k0 POP JMP2r &k0
+    ;ed-qry #00 ;ed-qry LDA INC ADD2 STA
+    ;ed-qry LDA INC ;ed-qry STA
+JMP2r
+
+( retire un caractere complet, octets de continuation compris )
+@ed-inp-pop ( -- )
+    &loop
+        ;ed-qry LDA #00 EQU ?&k0
+            ;ed-qry #00 ;ed-qry LDA ADD2 LDA .ed-ib STZ
+            ;ed-qry LDA #01 SUB ;ed-qry STA
+            .ed-ib LDZ #80 SUB #40 LTH #00 EQU ?&k1 !&loop &k1 &k0
+JMP2r
+
+( --- compteur de mots : octets <= 0x20 separent les mots --- )
+@ed-word-count ( -- n* )
+    #0000 .ed-wc STZ2
+    #0000 .ed-wp STZ2
+    #00 .ed-win STZ
+    &loop
+        .ed-wp LDZ2 .wd-buflen LDZ2 LTH2 ?&k0 .ed-wc LDZ2 JMP2r &k0
+        .ed-wp LDZ2 ;wd-buf ADD2 LDA .ed-ib STZ
+        .ed-ib LDZ #21 LTH #00 EQU ?&k1 #00 .ed-win STZ !&next &k1
+        .ed-win LDZ #00 EQU #00 EQU ?&k2
+            #01 .ed-win STZ
+            .ed-wc LDZ2 INC2 .ed-wc STZ2 &k2
+        &next
+        .ed-wp LDZ2 INC2 .ed-wp STZ2
+        !&loop
+
+( --- page haut / bas : Ctrl+Haut / Ctrl+Bas --- )
+@ed-page-size ( -- )
+    .wd-usable-rows LDZ2 #0001 SUB2 .ed-pgn STZ2
+    .ed-pgn LDZ2 #0001 LTH2 #00 EQU ?&k0 #0001 .ed-pgn STZ2 &k0
+    .ed-pgn LDZ2 #0100 LTH2 ?&k1 #0001 .ed-pgn STZ2 &k1
+JMP2r
+
+@ed-page-up ( -- )
+    ed-page-size
+    &loop
+        .ed-pgn LDZ2 #0000 EQU2 ?&k0
+            move-up
+            .ed-pgn LDZ2 #0001 SUB2 .ed-pgn STZ2
+            !&loop &k0
+JMP2r
+
+@ed-page-down ( -- )
+    ed-page-size
+    &loop
+        .ed-pgn LDZ2 #0000 EQU2 ?&k0
+            move-down
+            .ed-pgn LDZ2 #0001 SUB2 .ed-pgn STZ2
+            !&loop &k0
+JMP2r
+
+@ed-is-space ( b -- flag )
+    DUP #20 EQU SWP #09 EQU ORA
+JMP2r
+
+@ed-is-mark ( b -- flag )
+    DUP #3d EQU SWP #23 EQU ORA
+JMP2r
+
+@ed-is-heading ( start* -- flag )
+    .ed-tq STZ2
+    .ed-tq LDZ2 is-heading
+    .ed-tq LDZ2 is-heading-t2t
+    ORA
+JMP2r
+
+@ed-toc-count ( -- n* )
+    #0000 .ed-tp STZ2
+    #0000 .ed-ti STZ2
+    &loop
+        .ed-tp LDZ2 .wd-buflen LDZ2 LTH2 ?&k0 .ed-ti LDZ2 JMP2r &k0
+        .ed-tp LDZ2 ed-is-heading ?&k1 !&next &k1
+        .ed-ti LDZ2 INC2 .ed-ti STZ2
+        &next
+        .ed-tp LDZ2 line-end INC2 .ed-tp STZ2
+        !&loop
+
+( n* -- flag : cherche le n-ieme titre, son debut de ligne va dans ed-tpos )
+@ed-toc-nth
+    .ed-tn STZ2
+    #0000 .ed-tp STZ2
+    #0000 .ed-ti STZ2
+    &loop
+        .ed-tp LDZ2 .wd-buflen LDZ2 LTH2 ?&k0 #00 JMP2r &k0
+        .ed-tp LDZ2 ed-is-heading ?&k1 !&next &k1
+        .ed-ti LDZ2 .ed-tn LDZ2 EQU2 ?&k2 !&inc &k2
+        .ed-tp LDZ2 .ed-tpos STZ2
+        #01 JMP2r
+        &inc
+        .ed-ti LDZ2 INC2 .ed-ti STZ2
+        &next
+        .ed-tp LDZ2 line-end INC2 .ed-tp STZ2
+        !&loop
+
+( selection initiale : dernier titre dont la ligne commence avant le curseur )
+@ed-toc-init-sel ( -- )
+    #0000 .ed-tsel STZ2
+    #0000 .ed-tp STZ2
+    #0000 .ed-ti STZ2
+    &loop
+        .ed-tp LDZ2 .wd-buflen LDZ2 LTH2 ?&k0 JMP2r &k0
+        .wd-cursor LDZ2 .ed-tp LDZ2 LTH2 #00 EQU ?&k1 JMP2r &k1
+        .ed-tp LDZ2 ed-is-heading ?&k2 !&next &k2
+        .ed-ti LDZ2 .ed-tsel STZ2
+        .ed-ti LDZ2 INC2 .ed-ti STZ2
+        &next
+        .ed-tp LDZ2 line-end INC2 .ed-tp STZ2
+        !&loop
+
+( start* -- : ed-ts/ed-te = texte du titre sans marqueurs ni blancs, ed-tlv = niveau )
+@ed-toc-bounds
+    DUP2 .ed-ts STZ2
+    line-end .ed-te STZ2
+    #00 .ed-tlv STZ
+    &skip
+        .ed-ts LDZ2 .ed-te LDZ2 LTH2 ?&k0 !&trim &k0
+        .ed-ts LDZ2 ;wd-buf ADD2 LDA .ed-tb STZ
+        .ed-tb LDZ ed-is-space #00 EQU ?&k1 .ed-ts LDZ2 INC2 .ed-ts STZ2 !&skip &k1
+        .ed-tb LDZ ed-is-mark #00 EQU ?&k2
+            .ed-ts LDZ2 INC2 .ed-ts STZ2
+            .ed-tlv LDZ INC .ed-tlv STZ
+            !&skip &k2
+    &trim
+        .ed-te LDZ2 .ed-ts LDZ2 GTH2 ?&k3 JMP2r &k3
+        .ed-te LDZ2 #0001 SUB2 ;wd-buf ADD2 LDA .ed-tb STZ
+        .ed-tb LDZ ed-is-space #00 EQU ?&k4 .ed-te LDZ2 #0001 SUB2 .ed-te STZ2 !&trim &k4
+        .ed-tb LDZ #3d EQU #00 EQU ?&k5 .ed-te LDZ2 #0001 SUB2 .ed-te STZ2 !&trim &k5
+JMP2r
+
 ( CARTE MEMOIRE : code propre a l'entree |0100-, code partage |2900-
 | (environ 0xf00 octets), puis les donnees ci-dessous. `make layout`
 | verifie que le code ne deborde ni sur |3000 (entree graphique) ni sur
 | |4000 (partage) : uxnasm ne signale PAS un chevauchement (piege #13).
 | wd-buf = 0xb800 octets (~46 Ko), jusqu'a |ff00. )
+|4440 @ed-qry $24   ( saisie / requete de recherche : 1er octet = longueur )
+|44a0 @ed-rep $24   ( texte de remplacement )
 |3900 @ulog $480
 |3d80 @rlog $480
 |4200 @clip $200

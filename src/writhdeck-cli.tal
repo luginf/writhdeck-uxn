@@ -70,6 +70,30 @@
                     | scratch joue le meme role que la relecture memoire
                     | ailleurs dans ce fichier. )
 
+( zero-page supplementaire de la console (|00f8-|00ff, libre ici : la
+| zero-page |00c0-|00f3 est celle de core.tal, |00f4-|00f7 celle du gfx )
+|00f8
+@wd-ins         $1  ( 1 = on est actuellement dans la selection )
+
+( variables RAM propres a la console : |4500-|45ff n'est utilise que par
+| le graphique (police), libre ici )
+|4500
+@cm-mode   $1  ( 0 edition, 1 aller a la ligne, 2 recherche, 3 remplacer : chercher,
+                 | 4 remplacer par, 5 remplacer : confirmer, 6 table des matieres, 7 aide )
+@cm-b      $1  ( octet recu / octet final de la sequence )
+@cm-ep1    $1  ( parametre 1 de la sequence CSI )
+@cm-ep2    $1  ( parametre 2 )
+@cm-epn    $1  ( 0 = on remplit ep1, 1 = ep2 )
+@cm-shift  $1  ( 1 = Maj enfoncee dans la sequence )
+@cm-ctrl   $1  ( 1 = Ctrl enfoncee dans la sequence )
+@cm-kind   $1  ( touche decodee : 1 haut 2 bas 3 droite 4 gauche 5 debut 6 fin 7 pgup 8 pgdn 9 suppr 10 aide )
+@cm-col    $1  ( colonnes imprimees )
+@cm-p      $2  ( position d'impression )
+@cm-tvis   $2  ( TOC : rangees d'entrees )
+@cm-ttop   $2  ( TOC : premier titre affiche )
+@cm-tk     $2  ( TOC : rangee en cours )
+@cm-tidx   $2  ( TOC : index du titre imprime )
+
 |0100
 
 @on-reset ( -> )
@@ -148,35 +172,532 @@ BRK
 
 ( --- boucle interactive --- )
 @on-keypress ( -> )
-    .Console/read DEI
-    .wd-esc-state LDZ #00 NEQ #00 EQU ?{ handle-escape BRK }
-    .wd-confirm LDZ #00 NEQ #00 EQU ?{ handle-confirm BRK }
-
-    DUP #1b EQU #00 EQU ?{ POP #01 .wd-esc-state STZ BRK }
-    DUP #11 EQU #00 EQU ?{ POP try-quit BRK }
-    DUP #13 EQU #00 EQU ?{ POP save-file wd-render BRK }
-    DUP #1a EQU #00 EQU ?{ POP undo after-edit BRK }
-    DUP #19 EQU #00 EQU ?{ POP redo after-edit BRK }
-    DUP #0d EQU #00 EQU ?{ POP #0a insert-byte after-edit BRK }
-    DUP #0a EQU #00 EQU ?{ POP #0a insert-byte after-edit BRK }
-    DUP #7f EQU #00 EQU ?{ POP backspace after-edit BRK }
-    DUP #20 LTH #00 EQU ?{ POP BRK }
-    insert-byte after-edit
+    .Console/read DEI ;cm-b STA
+    .wd-esc-state LDZ ?&inesc
+    .wd-confirm LDZ ?&inconf
+    ;cm-mode LDA ?&inmode
+    !con-edit-key
+    &inesc
+    con-escape
+    BRK
+    &inconf
+    ;cm-b LDA handle-confirm
+    BRK
+    &inmode
+    con-mode-key
 BRK
 
-@handle-escape ( byte -- )
-    .wd-esc-state LDZ #01 EQU #00 EQU ?{
-        DUP #5b EQU #00 EQU ?{ POP #02 .wd-esc-state STZ BRK }
-        POP #00 .wd-esc-state STZ BRK }
+( --- touches du mode edition --- )
+@con-edit-key ( -> )
+    ;cm-b LDA #1b EQU ?&esc
+    ;cm-b LDA #11 EQU ?&quit
+    ;cm-b LDA #13 EQU ?&save
+    ;cm-b LDA #1a EQU ?&undo
+    ;cm-b LDA #19 EQU ?&redo
+    ;cm-b LDA #0d EQU ?&enter
+    ;cm-b LDA #0a EQU ?&enter
+    ;cm-b LDA #7f EQU ?&bksp
+    ;cm-b LDA #08 EQU ?&bksp
+    ;cm-b LDA #01 EQU ?&all
+    ;cm-b LDA #03 EQU ?&copy
+    ;cm-b LDA #18 EQU ?&cut
+    ;cm-b LDA #16 EQU ?&paste
+    ;cm-b LDA #05 EQU ?&endl
+    ;cm-b LDA #07 EQU ?&goto
+    ;cm-b LDA #06 EQU ?&find
+    ;cm-b LDA #12 EQU ?&repl
+    ;cm-b LDA #14 EQU ?&toc
+    ;cm-b LDA #20 LTH ?&ignore
+    ed-sel-eat
+    ;cm-b LDA insert-byte
+    after-edit
+    BRK
+    &ignore
+    BRK
+    &esc #01 .wd-esc-state STZ BRK
+    &quit try-quit BRK
+    &save save-file wd-render BRK
+    &undo ed-sel-clear undo after-edit BRK
+    &redo ed-sel-clear redo after-edit BRK
+    &enter ed-sel-eat #0a insert-byte after-edit BRK
+    &bksp ed-sel-active ?&bsel backspace after-edit BRK
+    &bsel ed-sel-eat after-edit BRK
+    &all ed-sel-all-engine clamp-scroll wd-render BRK
+    &copy ed-copy wd-render BRK
+    &cut ed-copy ed-sel-eat after-edit BRK
+    &paste ed-sel-eat ed-paste after-edit BRK
+    &endl ed-sel-clear move-end after-move BRK
+    &goto con-open-goto BRK
+    &find con-open-find BRK
+    &repl con-open-repl BRK
+    &toc con-open-toc BRK
+
+( --- sequences d'echappement : ESC [ params final, ESC O final ---
+| wd-esc-state : 0 repos, 1 vu ESC, 2 dans ESC[ (parametres), 3 vu ESC O. )
+@con-escape ( -- )
+    .wd-esc-state LDZ #01 EQU ?&s1
+    .wd-esc-state LDZ #03 EQU ?&s3
+    ;cm-b LDA #30 SUB #0a LTH ?&digit
+    ;cm-b LDA #3b EQU ?&semi
+    ;cm-b LDA #40 LTH ?&ignore
     #00 .wd-esc-state STZ
-    DUP #41 EQU #00 EQU ?{ POP move-up after-move BRK }
-    DUP #42 EQU #00 EQU ?{ POP move-down after-move BRK }
-    DUP #43 EQU #00 EQU ?{ POP move-right after-move BRK }
-    DUP #44 EQU #00 EQU ?{ POP move-left after-move BRK }
-    DUP #48 EQU #00 EQU ?{ POP move-home after-move BRK }
-    DUP #46 EQU #00 EQU ?{ POP move-end after-move BRK }
-    POP
+    con-csi-final
+    JMP2r
+    &digit
+    ;cm-epn LDA ?&d2
+    ;cm-ep1 LDA #0a MUL ;cm-b LDA #30 SUB ADD ;cm-ep1 STA
+    JMP2r
+    &d2
+    ;cm-ep2 LDA #0a MUL ;cm-b LDA #30 SUB ADD ;cm-ep2 STA
+    JMP2r
+    &semi
+    #01 ;cm-epn STA
+    &ignore
+    JMP2r
+    &s1
+    ;cm-b LDA #5b EQU ?&csi
+    ;cm-b LDA #4f EQU ?&ss3
+    #00 .wd-esc-state STZ
+    con-stray-esc
+    JMP2r
+    &csi
+    #02 .wd-esc-state STZ
+    #00 ;cm-ep1 STA #00 ;cm-ep2 STA #00 ;cm-epn STA
+    JMP2r
+    &ss3
+    #03 .wd-esc-state STZ
+    JMP2r
+    &s3
+    #00 .wd-esc-state STZ
+    #01 ;cm-ep1 STA #00 ;cm-ep2 STA
+    con-csi-final
+JMP2r
+
+( ESC suivi d'une touche ordinaire = Echap : annule l'invite en cours )
+@con-stray-esc ( -- )
+    ;cm-mode LDA #00 EQU ?&none
+    #00 ;cm-mode STA
+    wd-render
+    &none
+JMP2r
+
+@con-csi-final ( -- )
+    #00 ;cm-shift STA #00 ;cm-ctrl STA
+    ;cm-ep2 LDA #02 EQU ?&sh
+    ;cm-ep2 LDA #05 EQU ?&ct
+    !&decode
+    &sh #01 ;cm-shift STA !&decode
+    &ct #01 ;cm-ctrl STA
+    &decode
+    #00 ;cm-kind STA
+    ;cm-b LDA #41 EQU ?&up
+    ;cm-b LDA #42 EQU ?&down
+    ;cm-b LDA #43 EQU ?&right
+    ;cm-b LDA #44 EQU ?&left
+    ;cm-b LDA #48 EQU ?&home
+    ;cm-b LDA #46 EQU ?&end
+    ;cm-b LDA #50 EQU ?&help
+    ;cm-b LDA #7e EQU ?&tilde
+    JMP2r
+    &up #01 ;cm-kind STA !&go
+    &down #02 ;cm-kind STA !&go
+    &right #03 ;cm-kind STA !&go
+    &left #04 ;cm-kind STA !&go
+    &home #05 ;cm-kind STA !&go
+    &end #06 ;cm-kind STA !&go
+    &help #0a ;cm-kind STA !&go
+    &tilde
+    ;cm-ep1 LDA #01 EQU ?&home
+    ;cm-ep1 LDA #07 EQU ?&home
+    ;cm-ep1 LDA #04 EQU ?&end
+    ;cm-ep1 LDA #08 EQU ?&end
+    ;cm-ep1 LDA #03 EQU ?&del
+    ;cm-ep1 LDA #05 EQU ?&pgup
+    ;cm-ep1 LDA #06 EQU ?&pgdn
+    ;cm-ep1 LDA #0b EQU ?&help
+    JMP2r
+    &del #09 ;cm-kind STA !&go
+    &pgup #07 ;cm-kind STA !&go
+    &pgdn #08 ;cm-kind STA
+    &go
+    con-nav
+JMP2r
+
+( touche de navigation decodee dans cm-kind ; le sens depend du mode )
+@con-nav ( -- )
+    ;cm-mode LDA #07 EQU ?&closehelp
+    ;cm-mode LDA #06 EQU ?&tocnav
+    ;cm-mode LDA #02 EQU ?&findnav
+    ;cm-mode LDA ?&none
+    ;cm-kind LDA #0a EQU ?&help
+    ;cm-kind LDA #09 EQU ?&delete
+    con-sel-pre
+    ;cm-kind LDA #01 EQU ?&up
+    ;cm-kind LDA #02 EQU ?&down
+    ;cm-kind LDA #03 EQU ?&right
+    ;cm-kind LDA #04 EQU ?&left
+    ;cm-kind LDA #05 EQU ?&home
+    ;cm-kind LDA #06 EQU ?&end
+    ;cm-kind LDA #07 EQU ?&pgup
+    ;cm-kind LDA #08 EQU ?&pgdn
+    JMP2r
+    &up move-up after-move JMP2r
+    &down move-down after-move JMP2r
+    &right move-right after-move JMP2r
+    &left move-left after-move JMP2r
+    &home ;cm-ctrl LDA ?&top move-home after-move JMP2r
+    &top #0000 .wd-cursor STZ2 after-move JMP2r
+    &end ;cm-ctrl LDA ?&bottom move-end after-move JMP2r
+    &bottom .wd-buflen LDZ2 .wd-cursor STZ2 after-move JMP2r
+    &pgup ed-page-up after-move JMP2r
+    &pgdn ed-page-down after-move JMP2r
+    &delete
+    ed-sel-active ?&dsel
+    delete-forward after-edit
+    JMP2r
+    &dsel ed-sel-eat after-edit JMP2r
+    &help con-open-help JMP2r
+    &closehelp #00 ;cm-mode STA wd-render JMP2r
+    &tocnav con-toc-nav JMP2r
+    &findnav
+    ;cm-kind LDA #01 EQU ?&fprev
+    ;cm-kind LDA #02 EQU ?&fnext
+    JMP2r
+    &fprev con-find-prev JMP2r
+    &fnext con-find-next
+    &none
+JMP2r
+
+( Maj enfoncee : ancre la selection ; sinon l'abandonne )
+@con-sel-pre ( -- )
+    ;cm-shift LDA ?&shift
+    ed-sel-clear
+    JMP2r
+    &shift
+    .ed-sel LDZ2 #ffff EQU2 #00 EQU ?&ret
+    .wd-cursor LDZ2 .ed-sel STZ2
+    &ret
+JMP2r
+
+( ===== invites : aller a la ligne, recherche, remplacement (barre d'etat) =====
+| meme moteur que le graphique (ed-* dans core.tal). Annuler une invite :
+| Ctrl+C, ou Echap suivi d'une touche. )
+@con-open-goto ( -- )
+    #00 ;ed-qry STA
+    #00 .ed-qok STZ
+    #00 .ed-nf STZ
+    #01 ;cm-mode STA
+    wd-render
+JMP2r
+
+@con-open-find ( -- )
+    ed-sel-clear
+    .ed-qok LDZ #00 EQU ?&clr
+    !&go
+    &clr #00 ;ed-qry STA
+    &go
+    #01 .ed-qok STZ
+    #00 .ed-nf STZ
+    #02 ;cm-mode STA
+    wd-render
+JMP2r
+
+@con-open-repl ( -- )
+    ed-sel-clear
+    .ed-qok LDZ #00 EQU ?&clr
+    !&go
+    &clr #00 ;ed-qry STA
+    &go
+    #01 .ed-qok STZ
+    #00 .ed-nf STZ
+    #03 ;cm-mode STA
+    wd-render
+JMP2r
+
+@con-close-mode ( -- )
+    ;cm-mode LDA #04 EQU ?&swap
+    !&done
+    &swap ed-swap-buf
+    &done
+    ed-sel-clear
+    #00 ;cm-mode STA
+    clamp-scroll
+    wd-render
+JMP2r
+
+( surligne l'occurrence trouvee (ancre juste apres, le curseur au debut) )
+@con-mark-match ( -- )
+    .wd-cursor LDZ2 #00 ;ed-qry LDA ADD2 .ed-sel STZ2
+JMP2r
+
+@con-find-next ( -- )
+    ed-find-next ?&hit
+    #01 .ed-nf STZ
+    ed-sel-clear
+    !&r
+    &hit
+    #00 .ed-nf STZ
+    con-mark-match
+    &r
+    clamp-scroll
+    wd-render
+JMP2r
+
+@con-find-prev ( -- )
+    ed-find-prev ?&hit
+    #01 .ed-nf STZ
+    ed-sel-clear
+    !&r
+    &hit
+    #00 .ed-nf STZ
+    con-mark-match
+    &r
+    clamp-scroll
+    wd-render
+JMP2r
+
+( apres y / n : occurrence suivante ou fin avec le nombre de remplacements )
+@con-repl-next ( -- )
+    ed-find-from ?&more
+    #02 ;cm-mode STA
+    #02 .ed-nf STZ
+    ed-sel-clear
+    !&r
+    &more
+    con-mark-match
+    &r
+    clamp-scroll
+    wd-render
+JMP2r
+
+@con-mode-key ( -> )
+    ;cm-b LDA #1b EQU ?&escape
+    ;cm-mode LDA #07 EQU ?&help
+    ;cm-b LDA #03 EQU ?&cancel
+    ;cm-mode LDA #06 EQU ?&toc
+    ;cm-mode LDA #05 EQU ?&ask
+    ;cm-b LDA #0d EQU ?&submit
+    ;cm-b LDA #0a EQU ?&submit
+    ;cm-b LDA #7f EQU ?&pop
+    ;cm-b LDA #08 EQU ?&pop
+    ;cm-b LDA #06 EQU ?&ctrlf
+    ;cm-b LDA #20 LTH ?&ignore
+    ;cm-b LDA #7f EQU ?&ignore
+    ;cm-mode LDA #01 EQU ?&digits
+    &push
+    ;cm-b LDA ed-inp-push
+    wd-render
+    BRK
+    &digits
+    ;cm-b LDA #30 SUB #0a LTH ?&push
+    BRK
+    &pop ed-inp-pop wd-render BRK
+    &ctrlf ;cm-mode LDA #02 EQU ?&fnext BRK
+    &fnext con-find-next BRK
+    &ignore BRK
+    &escape #01 .wd-esc-state STZ BRK
+    &cancel con-close-mode BRK
+    &help #00 ;cm-mode STA wd-render BRK
+    &toc
+    ;cm-b LDA #0d EQU ?&tocgo
+    ;cm-b LDA #0a EQU ?&tocgo
+    ;cm-b LDA #14 EQU ?&cancel
+    BRK
+    &tocgo con-toc-go BRK
+    &ask
+    ;cm-b LDA #79 EQU ?&yes
+    ;cm-b LDA #59 EQU ?&yes
+    ;cm-b LDA #6e EQU ?&no
+    ;cm-b LDA #4e EQU ?&no
+    ;cm-b LDA #61 EQU ?&all
+    ;cm-b LDA #41 EQU ?&all
+    BRK
+    &yes ed-replace-here con-repl-next BRK
+    &no .wd-cursor LDZ2 INC2 .wd-cursor STZ2 con-repl-next BRK
+    &all
+    ed-replace-here
+    ed-find-from ?&all
+    #02 ;cm-mode STA
+    #02 .ed-nf STZ
+    ed-sel-clear
+    clamp-scroll
+    wd-render
+    BRK
+    &submit
+    ;cm-mode LDA #01 EQU ?&sgoto
+    ;cm-mode LDA #02 EQU ?&sfind
+    ;cm-mode LDA #03 EQU ?&sfrom
+    !&swith
+    &sgoto
+    ;ed-qry LDA #00 EQU ?&sclose
+    ed-goto-line
+    &sclose con-close-mode BRK
+    &sfind con-find-next BRK
+    &sfrom
+    ;ed-qry LDA #00 EQU ?&sdone
+    ed-swap-buf
+    #04 ;cm-mode STA
+    wd-render
+    &sdone BRK
+    &swith
+    ed-swap-buf
+    #0000 .ed-gn STZ2
+    ed-find-from ?&sfound
+    #0000 .wd-cursor STZ2
+    ed-find-from ?&sfound
+    #01 .ed-nf STZ
+    #03 ;cm-mode STA
+    wd-render
+    BRK
+    &sfound
+    #05 ;cm-mode STA
+    con-mark-match
+    clamp-scroll
+    wd-render
 BRK
+
+( ===== table des matieres (Ctrl+T) et aide (F1) : ecrans pleins ===== )
+@con-open-toc ( -- )
+    ed-sel-clear
+    ed-toc-count .ed-tcnt STZ2
+    .ed-tcnt LDZ2 #0000 EQU2 ?&none
+    ed-toc-init-sel
+    #06 ;cm-mode STA
+    wd-render
+    &none
+JMP2r
+
+@con-toc-nav ( -- )
+    ;cm-kind LDA #01 EQU ?&up
+    ;cm-kind LDA #02 EQU ?&down
+    JMP2r
+    &up
+    .ed-tsel LDZ2 #0000 EQU2 ?&r
+    .ed-tsel LDZ2 #0001 SUB2 .ed-tsel STZ2
+    wd-render
+    JMP2r
+    &down
+    .ed-tsel LDZ2 INC2 .ed-tcnt LDZ2 LTH2 #00 EQU ?&r
+    .ed-tsel LDZ2 INC2 .ed-tsel STZ2
+    wd-render
+    &r
+JMP2r
+
+@con-toc-go ( -- )
+    .ed-tsel LDZ2 ed-toc-nth ?&found
+    JMP2r
+    &found
+    .ed-tpos LDZ2 .wd-cursor STZ2
+    #00 ;cm-mode STA
+    clamp-scroll
+    wd-render
+JMP2r
+
+@newline ( -- ) #0a putc JMP2r
+
+@con-toc-render ( -- )
+    hide-cursor
+    reset-cursor
+    ansi-reverse
+    ;toc-title str-log
+    clear-eol
+    ansi-reset
+    newline
+    clear-eol
+    newline
+    .wd-rows LDZ2 #0003 SUB2 ;cm-tvis STA2
+    #0000 ;cm-ttop STA2
+    .ed-tsel LDZ2 ;cm-tvis LDA2 LTH2 ?&fit
+    .ed-tsel LDZ2 ;cm-tvis LDA2 SUB2 INC2 ;cm-ttop STA2
+    &fit
+    #0000 ;cm-tk STA2
+    &rows
+        ;cm-tk LDA2 ;cm-tvis LDA2 LTH2 ?&row
+        !&done
+        &row
+        ;cm-ttop LDA2 ;cm-tk LDA2 ADD2 ;cm-tidx STA2
+        ;cm-tidx LDA2 .ed-tcnt LDZ2 LTH2 ?&entry
+        !&blank
+        &entry
+        ;cm-tidx LDA2 ed-toc-nth ?&have
+        !&blank
+        &have
+        .ed-tpos LDZ2 ed-toc-bounds
+        ;cm-tidx LDA2 .ed-tsel LDZ2 EQU2 ?&sel
+        !&nosel
+        &sel ansi-reverse
+        &nosel
+        #20 putc #20 putc
+        .ed-tlv LDZ #01 LTH ?&noind
+        .ed-tlv LDZ #01 SUB #10 SFT ;cm-col STA
+        &ind
+            ;cm-col LDA #00 EQU ?&noind
+            #20 putc
+            ;cm-col LDA #01 SUB ;cm-col STA
+            !&ind
+        &noind
+        .ed-ts LDZ2 ;cm-p STA2
+        #00 ;cm-col STA
+        &chars
+            ;cm-p LDA2 .ed-te LDZ2 LTH2 ?&ch
+            !&endrow
+            &ch
+            ;cm-col LDA #00 SWP .wd-cols LDZ2 #0008 SUB2 LTH2 ?&ch2
+            !&endrow
+            &ch2
+            ;cm-p LDA2 entry-cw
+            #00 ;cm-ep1 STA
+            &bytes
+                ;cm-ep1 LDA .wd-cwn LDZ LTH ?&b
+                !&bdone
+                &b
+                ;cm-p LDA2 #00 ;cm-ep1 LDA ADD2 ;wd-buf ADD2 LDA putc
+                ;cm-ep1 LDA INC ;cm-ep1 STA
+                !&bytes
+            &bdone
+            ;cm-p LDA2 #00 .wd-cwn LDZ ADD2 ;cm-p STA2
+            ;cm-col LDA INC ;cm-col STA
+            !&chars
+        &endrow
+        ansi-reset
+        &blank
+        clear-eol
+        newline
+        ;cm-tk LDA2 INC2 ;cm-tk STA2
+        !&rows
+    &done
+    ansi-reverse
+    ;toc-help str-log
+    clear-eol
+    ansi-reset
+    ansi-clear-below
+JMP2r
+
+@con-open-help ( -- )
+    #07 ;cm-mode STA
+    wd-render
+JMP2r
+
+@con-help-render ( -- )
+    hide-cursor
+    reset-cursor
+    ;help-con
+    &lines
+        LDAk #00 EQU ?&end
+        DUP2 str-log
+        clear-eol
+        newline
+        &skip
+            LDAk #00 EQU ?&next
+            INC2
+            !&skip
+        &next
+        INC2
+        !&lines
+    &end
+    POP2
+    ansi-clear-below
+JMP2r
 
 @after-edit ( -- )
     #01 .wd-dirty STZ
@@ -254,29 +775,50 @@ JMP2r
 | respecte deja la largeur ET ne traverse jamais un saut de ligne. )
 @render-row ( -- )
     &loop
-        .wd-tmp1 LDZ2 .wd-tmp34 LDZ2 LTH2 #00 EQU ?{
-            .wd-hl LDZ #00 EQU ?&plain
-            .wd-tmp1 LDZ2 mark-step
-            .wd-tmp1 LDZ2 .wd-mend LDZ2 LTH2 .wd-mst STZ
-            .wd-mst LDZ .wd-inm LDZ EQU ?&plain
-            .wd-mst LDZ .wd-inm STZ
-            .wd-mst LDZ #00 EQU ?&off
-            ansi-mark-on
-            !&plain
-            &off
-            ansi-reset
-            &plain
-            .wd-tmp1 LDZ2 ;wd-buf ADD2 LDA putc
-            .wd-tmp1 LDZ2 #0001 ADD2 .wd-tmp1 STZ2
-            !&loop }
-JMP2r
+        .wd-tmp1 LDZ2 .wd-tmp34 LDZ2 LTH2 ?&body
+        JMP2r
+        &body
+        .wd-hl LDZ #00 EQU ?&nomark
+        .wd-tmp1 LDZ2 mark-step
+        .wd-tmp1 LDZ2 .wd-mend LDZ2 LTH2 .wd-mst STZ
+        .wd-mst LDZ .wd-inm LDZ EQU ?&nomark
+        .wd-mst LDZ .wd-inm STZ
+        .wd-mst LDZ #00 EQU ?&moff
+        ansi-mark-on
+        !&nomark
+        &moff
+        ansi-fg-default
+        &nomark
+        #00 .wd-mst STZ
+        .wd-tmp1 LDZ2 .ed-slo LDZ2 LTH2 ?&s0
+        .wd-tmp1 LDZ2 .ed-shi LDZ2 LTH2 #00 EQU ?&s0
+        #01 .wd-mst STZ
+        &s0
+        .wd-mst LDZ .wd-ins LDZ EQU ?&nosel
+        .wd-mst LDZ .wd-ins STZ
+        .wd-mst LDZ #00 EQU ?&soff
+        ansi-reverse
+        !&nosel
+        &soff
+        ansi-reverse-off
+        &nosel
+        .wd-tmp1 LDZ2 ;wd-buf ADD2 LDA putc
+        .wd-tmp1 LDZ2 #0001 ADD2 .wd-tmp1 STZ2
+        !&loop
 
 ( Trois phases, meme decoupage que draw_editor cote writhdeck-asm :
 | marge du haut (rangees vides), zone de texte (wd-usable-rows
 | rangees, chacune indentee de wd-eff-margin-cols colonnes), marge du
 | bas (rangees vides jusqu'a juste avant la barre de statut). )
 @wd-render ( -- )
+    ;cm-mode LDA #06 EQU ?&dotoc
+    ;cm-mode LDA #07 EQU ?&dohelp
+    !&normal
+    &dotoc con-toc-render JMP2r
+    &dohelp con-help-render JMP2r
+    &normal
     hide-cursor
+    ed-sel-range
     #ffff .wd-mline STZ2
     #0000 .wd-mend STZ2
     reset-cursor
@@ -312,6 +854,7 @@ JMP2r
             ( marques en ligne seulement hors titres et commentaires )
             #00 .wd-hl STZ
             #00 .wd-inm STZ
+            #00 .wd-ins STZ
             .wd-tmp35 LDZ2 is-heading .wd-tmp35 LDZ2 is-heading-t2t ORA ?&nothl
             .wd-tmp35 LDZ2 is-comment ?&nothl
             #01 .wd-hl STZ
@@ -336,7 +879,9 @@ JMP2r
             !&bottom-margin-loop }
 
     wd-status-bar
+    ;cm-mode LDA ?&prompt
     wd-position-cursor
+    &prompt
     show-cursor
 JMP2r
 
@@ -348,6 +893,13 @@ JMP2r
     #0001 wd-print-dec
     #48 putc
     ansi-reverse
+    ;cm-mode LDA #01 LTH ?&noprompt
+    ;cm-mode LDA #06 LTH #00 EQU ?&noprompt
+    con-prompt-line
+    clear-eol
+    ansi-reset
+    JMP2r
+    &noprompt
     .wd-confirm LDZ #00 EQU ?{
         .wd-fname-len LDZ #00 EQU #00 EQU ?{ ;msg-quit-draft str-log clear-eol ansi-reset JMP2r }
         ;msg-quit str-log clear-eol ansi-reset
@@ -359,10 +911,56 @@ JMP2r
     ;status-comma str-log
     .wd-cursor LDZ2 .wd-cursor LDZ2 line-start SUB2 #0001 ADD2 wd-print-dec
     .wd-dirty LDZ #00 NEQ #00 EQU ?{ ;status-dirty str-log }
+    ;status-sp str-log
+    ed-word-count wd-print-dec
+    ;status-words str-log
     .wd-trunc LDZ #00 EQU ?&nt ;status-trunc str-log &nt
     .wd-buflen LDZ2 #b800 LTH2 ?&nf ;status-full str-log &nf
     clear-eol
     ansi-reset
+JMP2r
+
+( texte de l'invite + saisie, dans la barre d'etat )
+@con-prompt-line ( -- )
+    ;cm-mode LDA #05 EQU ?&ask
+    ;cm-mode LDA #01 EQU ?&goto
+    ;cm-mode LDA #02 EQU ?&find
+    ;cm-mode LDA #03 EQU ?&rfind
+    ;prm-rwith str-log
+    !&input
+    &goto ;prm-goto str-log !&input
+    &find ;prm-find str-log !&input
+    &rfind ;prm-rfind str-log
+    &input
+    #01 ;cm-ep1 STA
+    &c
+        ;cm-ep1 LDA ;ed-qry LDA GTH #00 EQU ?&cc
+        !&hints
+        &cc
+        ;ed-qry #00 ;cm-ep1 LDA ADD2 LDA putc
+        ;cm-ep1 LDA INC ;cm-ep1 STA
+        !&c
+    &hints
+    ;cm-mode LDA #02 EQU ?&fh
+    ;cm-mode LDA #01 EQU ?&gh
+    JMP2r
+    &gh
+    JMP2r
+    &fh
+    .ed-nf LDZ #01 EQU ?&nf
+    .ed-nf LDZ #02 EQU ?&rep
+    ;prm-fhint str-log
+    JMP2r
+    &nf
+    ;prm-nf str-log
+    JMP2r
+    &rep
+    #20 putc
+    .ed-gn LDZ2 wd-print-dec
+    ;prm-replaced str-log
+    JMP2r
+    &ask
+    ;prm-rask str-log
 JMP2r
 
 @wd-fname-status ( -- )
@@ -431,6 +1029,9 @@ JMP2r
 @ansi-heading-on ( -- ) ;ansi-heading-seq str-log JMP2r
 @ansi-comment-on ( -- ) ;ansi-comment-seq str-log JMP2r
 @ansi-mark-on ( -- ) ;ansi-mark-seq str-log JMP2r
+@ansi-fg-default ( -- ) ;ansi-fg-default-seq str-log JMP2r
+@ansi-reverse-off ( -- ) ;ansi-reverse-off-seq str-log JMP2r
+@ansi-clear-below ( -- ) ;ansi-clear-below-seq str-log JMP2r
 
 @ansi-alt-buf-on [ 1b "[?1049h 00 ]
 @ansi-alt-buf-off [ 1b "[?1049l 00 ]
@@ -446,6 +1047,9 @@ JMP2r
 @ansi-heading-seq [ 1b "[31m 00 ]
 @ansi-comment-seq [ 1b "[32m 00 ]
 @ansi-mark-seq [ 1b "[36m 00 ]
+@ansi-fg-default-seq [ 1b "[39m 00 ]
+@ansi-reverse-off-seq [ 1b "[27m 00 ]
+@ansi-clear-below-seq [ 1b "[J 00 ]
 
 @msg-quit "Unsaved 20 "changes! 20 20 "s: 20 "save 20 "and 20 "quit 20 20 "y: 20 "quit 20 "without 20 "saving 20 20 "other 20 "key: 20 "cancel 00
 @msg-quit-draft "Unsaved 20 "draft! 20 20 "y: 20 "quit 20 "without 20 "saving 20 20 "other 20 "key: 20 "cancel 00
@@ -455,6 +1059,38 @@ JMP2r
 @status-dirty 20 "[+] 00
 @status-trunc 20 "[file 20 "too 20 "big, 20 "truncated: 20 "saving 20 "disabled] 00
 @status-full 20 "[buffer 20 "full] 00
+
+@prm-goto "Go 20 "to 20 "line: 20 00
+@prm-find "Find: 20 00
+@prm-rfind "Replace 20 "- 20 "find: 20 00
+@prm-rwith "Replace 20 "with: 20 00
+@prm-rask "Replace? 20 20 "y: 20 "this 20 "one 20 20 "n: 20 "skip 20 20 "a: 20 "all 20 20 "Ctrl+C: 20 "stop 00
+@prm-fhint 20 20 20 "Enter/Down: 20 "next 20 20 "Up: 20 "previous 20 20 "Ctrl+C: 20 "close 00
+@prm-nf 20 20 20 "not 20 "found 00
+@prm-replaced 20 "replaced 00
+@toc-title 20 "Table 20 "of 20 "contents 00
+@toc-help 20 "Up/Down: 20 "select 20 "-- 20 "Enter: 20 "go 20 "-- 20 "Ctrl+C: 20 "back 00
+@status-words 20 "words 00
+@status-sp 20 20 00
+
+@help-con
+    "WrithDeck-uxn 20 "(terminal) 20 "-- 20 "keys 00
+    20 00
+    "Ctrl+S 20 20 "Save 20 20 20 20 20 20 20 20 20 20 20 20 20 20 20 20 20 20 20 20 20 20 "Ctrl+Q 20 20 "Quit 20 "(asks 20 "if 20 "unsaved) 00
+    "Ctrl+Z 20 "/ 20 "Ctrl+Y 20 20 "Undo 20 "/ 20 "redo 00
+    "Ctrl+F 20 20 "Find: 20 "Enter 20 "or 20 "Down 20 "next, 20 "Up 20 "previous, 20 "Ctrl+C 20 "close 00
+    "Ctrl+R 20 20 "Replace: 20 "y 20 "this 20 "one, 20 "n 20 "skip, 20 "a 20 "all, 20 "Ctrl+C 20 "stop 00
+    "Ctrl+G 20 20 "Go 20 "to 20 "line 20 20 20 20 20 20 20 20 20 20 20 20 20 20 20 20 "Ctrl+T 20 20 "Table 20 "of 20 "contents 00
+    "Shift+arrows 20 20 "Select 20 20 20 20 20 20 20 20 20 20 20 20 20 20 "Ctrl+A 20 20 "Select 20 "all 00
+    "Ctrl+C 20 "/ 20 "Ctrl+X 20 "/ 20 "Ctrl+V 20 20 "Copy 20 "/ 20 "cut 20 "/ 20 "paste 20 "(internal 20 "clipboard) 00
+    "Home 20 "/ 20 "End, 20 "Ctrl+E 20 20 "Line 20 "start 20 "/ 20 "end; 20 20 "PgUp 20 "/ 20 "PgDn 20 20 "Page 00
+    "Ctrl+Home 20 "/ 20 "Ctrl+End 20 20 "Start 20 "/ 20 "end 20 "of 20 "the 20 "document 00
+    "Delete 20 "/ 20 "Backspace 20 20 "Erase 20 "forward 20 "/ 20 "backward 00
+    "Ctrl+C, 20 "or 20 "Esc 20 "then 20 "any 20 "key, 20 "cancels 20 "a 20 "prompt 00
+    "F1 20 20 "This 20 "help 00
+    20 00
+    "Press 20 "any 20 "key 20 "to 20 "close 00
+    00
 
 @wd-meta [ $1
     "writhdeck-uxn 0a

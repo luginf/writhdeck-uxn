@@ -33,11 +33,16 @@ def status_lines(out):
 out, code = run([str(doc)], [b"\x1b[B", b"\x1b[B", b"\x1b[B", b"\x1b[B", b"\x11"],
                  "Down x4: cross wrapped segments then into next line", cwd=WORKDIR)
 assert code == 0
+import re
+def status_pos(line):
+    """'line,col' of a status bar such as 'file -- 1,66  12 words'"""
+    return re.search(r" -- (\d+,\d+)", line).group(1)
+
 statuses = status_lines(out)
-assert statuses[0].endswith(" -- 1,1")
-assert statuses[1].endswith(" -- 1,66")
-assert statuses[2].endswith(" -- 1,129")
-assert statuses[3].endswith(" -- 2,1")
+assert status_pos(statuses[0]) == "1,1"
+assert status_pos(statuses[1]) == "1,66"
+assert status_pos(statuses[2]) == "1,129"
+assert status_pos(statuses[3]) == "2,1"
 
 # Down x4 then Up x3 should land back exactly where the 2nd Down landed.
 out, code = run([str(doc)], [b"\x1b[B", b"\x1b[B", b"\x1b[B", b"\x1b[B",
@@ -45,7 +50,7 @@ out, code = run([str(doc)], [b"\x1b[B", b"\x1b[B", b"\x1b[B", b"\x1b[B",
                  "Down x4 then Up x3: symmetric round-trip", cwd=WORKDIR)
 assert code == 0
 statuses = status_lines(out)
-assert statuses[-1].endswith(" -- 1,66"), f"expected to land back at 1,66, got {statuses[-1]!r}"
+assert status_pos(statuses[-1]) == "1,66", f"expected to land back at 1,66, got {statuses[-1]!r}"
 
 # A heading long enough to wrap: every visual row of it must still be red.
 doc2 = WORKDIR / "wrapheading.txt"

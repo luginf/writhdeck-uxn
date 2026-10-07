@@ -11,7 +11,8 @@ machine: a port of [WrithDeck](https://github.com/luginf/writhdeck).
 
 ```
 make rom rom-cli            # needs uxnasm and python3
-./writhdeck-uxn -g notes.txt
+./writhdeck-uxn notes.txt      # graphical build
+./writhdeck-uxn -c notes.txt   # terminal build
 ./writhdeck-uxn             # help
 ```
 

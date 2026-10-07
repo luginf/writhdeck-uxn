@@ -15,15 +15,15 @@ editing core:
 
 ```
 make rom rom-cli          # needs uxnasm and python3
-./writhdeck-uxn notes.txt # terminal build
-./writhdeck-uxn -g notes.txt
+./writhdeck-uxn notes.txt     # graphical build (terminal build if there is no display)
+./writhdeck-uxn -c notes.txt  # terminal build
 ```
 
 `writhdeck-uxn` is a small launcher (run it without argument for its help):
 
 | Option | Meaning |
 | --- | --- |
-| `-c` / `-g` | terminal (default) / graphical build |
+| `-g` / `-c` | graphical (default; falls back to the terminal build when there is no display) / terminal build |
 | `-n` | start an empty draft, no file |
 | `-s WxH` | graphical window size in pixels, e.g. `1280x800` (default 960x576) |
 | `-z 1\|2\|3` | zoom the graphical window |
@@ -32,7 +32,7 @@ make rom rom-cli          # needs uxnasm and python3
 
 It opens the file from the file's own directory (the uxn File device cannot
 reach paths outside the current directory), rebuilds a rom that is older than
-its sources, and puts the terminal in raw mode for the terminal build. Set
+its sources, and puts the terminal in raw mode for the terminal build (`-c`). Set
 `UXNCLI` / `UXNEMU` to choose the emulators. You can also run the roms
 directly: `uxnemu writhdeck.rom notes.txt 1280x800 light f2`.
 **Do not use `uxn2` to open files**: that build has a bug that truncates the
@@ -45,6 +45,27 @@ of line), Enter, Backspace, **Ctrl+S** save, **Ctrl+Q** quit (asks `s` save and
 quit, `y` quit without saving, any other key cancels, when there are unsaved
 changes), **Ctrl+Z / Ctrl+Y** undo / redo. Saving needs a file name given at
 start-up.
+
+Terminal build, besides the above (keys are what a terminal can send; **F1**
+shows this list in the program):
+
+| Key | Action |
+| --- | --- |
+| Delete, Backspace | Erase forward / backward (whole characters) |
+| Home / End, Ctrl+E, Ctrl+Home / Ctrl+End | Line start / end, start / end of the document |
+| PgUp / PgDn | Page up / down |
+| Shift+arrows, Ctrl+A | Select, select all (shown in reverse video) |
+| Ctrl+C / X / V | Copy / cut / paste (internal clipboard, 512 bytes); typing, Enter, Backspace and Delete replace or erase the selection |
+| Ctrl+G | Go to line (number, Enter) |
+| Ctrl+F | Find, not case sensitive for ASCII: type, Enter or Down = next, Up = previous; the match is highlighted |
+| Ctrl+R | Replace: find text, Enter, replacement, Enter, then `y` this one, `n` skip, `a` all |
+| Ctrl+T | Table of contents (Up/Down, Enter to jump) |
+| F1 | Help |
+
+In a prompt, **Ctrl+C** cancels (so does Esc followed by any key). The status
+bar shows a word count too. Use the launcher (`-c`) for the terminal build: it
+puts the tty in raw mode, without which Ctrl+C, Ctrl+V and friends would not
+reach the program.
 
 Graphical build only (the Varvara Controller reports no function keys, so
 everything is Ctrl+letter; Ctrl+H shows this list):
@@ -115,8 +136,8 @@ Nothing else is read (uxn cannot read environment variables, so there is no
   appears when typing fills the buffer. Split big texts into several files.
   Very long single lines (tens of KB without a newline) are slow.
 - No save-as, no system clipboard, left Shift only, no F-keys.
-- The terminal build lacks the graphical extras (find, replace, go to line,
-  selection, mouse, table of contents, themes).
+- The terminal build lacks the graphical extras: mouse, themes and fonts (it
+  uses the terminal's own).
 
 ## Tests
 

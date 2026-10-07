@@ -3,11 +3,12 @@
 #
 #   writhdeck-uxn [options] [file]        (no argument: this help)
 #     -n, --new          empty draft, no file
-#     -c, --cli          terminal mode (default): bin/writhdeck-cli.rom via uxncli
-#     -g, --gui          graphical mode: bin/writhdeck.rom via uxnemu
+#     -g, --gui          graphical mode (default): bin/writhdeck.rom via uxnemu;
+#                        falls back to terminal mode when there is no display
+#     -c, --cli          terminal mode: bin/writhdeck-cli.rom via uxncli
 #     -s, --size WxH     graphical window size in pixels (e.g. 1280x800)
 #     -z, --zoom N       graphical window zoom 1 to 3 (uxnemu -2x / -3x)
-#     -l, --light        graphical mode: black on white (Ctrl+D toggles)
+#     -l, --light        start in the light theme, black on white (Ctrl+D toggles)
 #     -f, --font NAME    graphical mode font: vga (default), cream (10x16, with
 #                        French accents), prop (proportional cream of left),
 #                        creamprop (Cream 10x16 made proportional); Ctrl+P cycles
@@ -23,7 +24,7 @@
 # same limitation as kibi.tal, same remedy: disable icanon/echo before
 # running the rom and restore afterwards (even on error).
 DIR=$(cd "$(dirname "$0")" && pwd)
-MODE=cli SIZE= ZOOM= FILE= LIGHT= FONT=
+MODE= SIZE= ZOOM= FILE= LIGHT= FONT=
 
 usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; }
 
@@ -60,6 +61,11 @@ ensure_rom() {
     fi
 }
 
+if [ -z "$MODE" ]; then
+    if [ -n "$DISPLAY$WAYLAND_DISPLAY" ]; then MODE=gui
+    else MODE=cli; echo "writhdeck-uxn: no display, using the terminal build" >&2; fi
+fi
+
 if [ -n "$FILE" ]; then
     case "$FILE" in
         */*) cd "$(dirname "$FILE")" || exit 1; FILE=$(basename "$FILE") ;;
@@ -67,12 +73,12 @@ if [ -n "$FILE" ]; then
 fi
 
 if [ "$MODE" = cli ]; then
-    [ -n "$SIZE$ZOOM$LIGHT$FONT" ] && echo "writhdeck-uxn: --size/--zoom/--light/--font ignored in terminal mode" >&2
+    [ -n "$SIZE$ZOOM$LIGHT$FONT" ] && echo "writhdeck-uxn: --size/--zoom/--light/--font ignored in terminal mode" >&2 || true
     ROM=$DIR/bin/writhdeck-cli.rom
     ensure_rom "$ROM" rom-cli
     TTY=`stty -g`
     stty -ignbrk -brkint -ignpar -parmrk -inpck -istrip -inlcr -igncr -icrnl -ixon \
-         -ixoff -icanon onlcr -echo -isig -iuclc -ixany -imaxbel -xcase min 1 time 0
+         -ixoff -icanon onlcr -echo -isig -iexten -iuclc -ixany -imaxbel -xcase min 1 time 0
     ${UXNCLI:-uxncli} "$ROM" ${FILE:+"$FILE"}
     EXIT=$?
     stty $TTY

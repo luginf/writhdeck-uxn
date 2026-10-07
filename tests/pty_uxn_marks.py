@@ -14,6 +14,6 @@ assert code == 0, code
 txt = out.decode("utf-8", "replace")
 assert "\x1b[32m% a comment" in txt, "comment not green"
 assert "\x1b[31m= Title =" in txt, "heading not red"
-assert "plain \x1b[36m**bold**\x1b[0m and \x1b[36m//it//\x1b[0m end" in txt, repr(txt[-400:])
+assert "plain \x1b[36m**bold**\x1b[39m and \x1b[36m//it//\x1b[39m end" in txt, repr(txt[-400:])
 assert "alone ** star -- dash" in txt and "\x1b[36m** star" not in txt, "false positive"
 print("ALL MARK HIGHLIGHT TESTS PASSED")

@@ -1,0 +1,1 @@
+./writhdeck-uxn -g -s 800x480 -z 2 -l -f creamprop $1

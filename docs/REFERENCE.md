@@ -48,7 +48,8 @@ make run FILE=path # runs it via uxnemu (needs a real display)
 
 ```
 ./writhdeck-uxn [-c|-g] [-n] [-s WxH] [-z 1|2|3] [file]   # no argument: help
-./writhdeck-uxn file.txt                 # terminal (default)
+./writhdeck-uxn file.txt                 # graphical (default; terminal if no display)
+./writhdeck-uxn -c file.txt              # terminal
 ./writhdeck-uxn -g file.txt              # graphical window (uxnemu)
 ./writhdeck-uxn -g -s 1280x800 file.txt  # graphical, chosen window size
 ./writhdeck-uxn -g -n -z 2               # graphical, zoomed x2, empty draft

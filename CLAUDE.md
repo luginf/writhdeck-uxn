@@ -33,7 +33,7 @@ autre machine.
   `tests/check_layout.py` (aucun chevauchement code/données) + suite
   graphique ; `make layout` seul pour la carte mémoire.
 - Lanceur unique `./writhdeck-uxn` (sans argument : aide en anglais) :
-  `-c/-g` (console/graphique), `-n` brouillon, `-s LxH`, `-z 1|2|3`,
+  `-g/-c` (graphique par DÉFAUT, repli console sans $DISPLAY/$WAYLAND_DISPLAY ; console), `-n` brouillon, `-s LxH`, `-z 1|2|3`,
   `-l` clair, `-f vga|cream|prop|creamprop`. Il se place dans le
   répertoire du fichier (sandbox du device File), reconstruit le ROM si une
   source/police/outil est plus récent, met le tty en raw pour la console.
@@ -47,7 +47,7 @@ autre machine.
 - Le ROM graphique fait 0xff00 octets de code PUIS la banque de polices
   (`tools/append_bank.py`) : ~94 Ko au total, chargé par uxncli/uxnemu/uxn2.
 
-### Fonctions (graphique ; la console a : édition, flèches, Ctrl+S/Q, Ctrl+Z/Y, titres/commentaires/marques colorés, retour à la ligne, confirmation de sortie)
+### Fonctions (graphique ; la console a presque tout sauf souris/thèmes/polices : voir plus bas)
 Ctrl+S sauver ; Ctrl+Q quitter (confirmation si modifié, trace sur stderr) ;
 Ctrl+Z/Y annuler/rétablir ; Ctrl+F recherche ; Ctrl+R remplacer (y/n/a) ;
 Ctrl+G ligne ; Ctrl+T table des matières ; Ctrl+D clair/sombre ; Ctrl+P
@@ -55,8 +55,16 @@ police (nom affiché dans la barre) ; Ctrl+H aide ; Ctrl+A/C/X/V sélection
 et presse-papiers interne (512 o) ; Maj+flèches (Maj GAUCHE seulement) ;
 Ctrl+Haut/Bas pages ; Ctrl+Début ; Suppr ; souris (voir plus bas) ;
 compteur de mots ; UTF-8 : déplacements/effacements par caractère.
-La console n'a PAS (à porter si besoin) : recherche, remplacement, aller à
-la ligne, sélection, souris, TOC, thème, aide.
+CONSOLE (`src/writhdeck-cli.tal`) : mêmes fonctions que le graphique sauf souris,
+thèmes et polices : Suppr, Début/Fin (toutes variantes ESC[1~ 4~ 7~ 8~ H F, ESC O H/F),
+PgUp/PgDn, Ctrl+Home/End (ESC[1;5H/F), Maj+flèches (ESC[1;2x), Ctrl+A/C/X/V,
+Ctrl+G/F/R/T, F1 (ESC O P, ESC[11~), compteur de mots, surlignage de la
+sélection (ESC[7m/27m) et du résultat de recherche. Moteur partagé `ed-*` dans
+`core.tal` (déplacé du graphique) ; UI console = `con-*` (modes `cm-mode`
+0 édition, 1 ligne, 2 recherche, 3-5 remplacer, 6 TOC, 7 aide), analyseur CSI
+`con-escape`/`con-csi-final` (ESC seul = rien tant qu'une touche ne suit pas :
+annuler une invite = Ctrl+C ou Echap puis une touche). Le wrapper met `-iexten`
+(sinon Ctrl+V est avalé par le tty). Tests : `tests/pty_uxn_cli_features.py`.
 
 ### Architecture
 `src/core.tal` (partagé) = tampon plat + édition + curseur + retour à la
