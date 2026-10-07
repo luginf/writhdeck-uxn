@@ -6,7 +6,7 @@ Latin-1 letters and a few typographic signs on top of its glyphs.
 
 Format (uxn UF2): 256 width bytes, then 256 glyphs of 32 bytes. A glyph is
 four 8x8 tiles in the order top-left, bottom-left, top-right, bottom-right.
-The code space is the one of writhdeck-gfx.tal: ASCII 0x20-0x7e, Latin-1
+The code space is the one of writhdeck.tal: ASCII 0x20-0x7e, Latin-1
 0xa0-0xff, and 0x80-0x88 = ' ... - -- " " oe OE euro.
 
 Geometry of cream: capitals occupy rows 3-11, x-height rows 5-11, descenders

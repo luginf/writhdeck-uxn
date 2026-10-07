@@ -7,7 +7,7 @@ compiled rom through `uxncli` under a real pty (as if a terminal were
 typing at it) and inspecting the ANSI bytes it writes back.
 
 Boot blocks waiting for a DSR terminal-size reply (see `on-sizereply`
-in src/writhdeck.tal) before it will render anything or accept
+in src/writhdeck-cli.tal) before it will render anything or accept
 keypresses. A real terminal answers that automatically; a bare pty
 does not, so `run()` answers it here -- every test in this directory
 depends on that happening, which is why it lives in one shared place
@@ -29,12 +29,12 @@ from pathlib import Path
 
 UXNCLI = os.environ.get("UXNCLI", "uxncli")
 REPO_ROOT = Path(__file__).resolve().parent.parent
-ROM = str(REPO_ROOT / "bin" / "writhdeck.rom")
+ROM = str(REPO_ROOT / "bin" / "writhdeck-cli.rom")
 
 
 def run(args, keys, label, cwd, rows=24, cols=80, settle=0.3, key_delay=0.12,
         collect=1.5, answer_dsr=True, dsr_rows=None, dsr_cols=None, quiet=False):
-    """Launch bin/writhdeck.rom under uxncli on a pty, answer its boot-time
+    """Launch bin/writhdeck-cli.rom under uxncli on a pty, answer its boot-time
     terminal-size query, send `keys` (raw byte strings), and return
     (all_output_bytes, exit_code)."""
     dsr_rows = rows if dsr_rows is None else dsr_rows

@@ -1,5 +1,5 @@
 """Word-wrap rendering: a long line should break at the last space before
-the text width, never mid-word. See wrap-row-end in src/writhdeck.tal.
+the text width, never mid-word. See wrap-row-end in src/writhdeck-cli.tal.
 """
 from pathlib import Path
 from pty_harness import run

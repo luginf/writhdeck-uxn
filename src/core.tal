@@ -1,5 +1,5 @@
-( core.tal -- logique PARTAGEE entre writhdeck.tal (console, device
-| Console) et writhdeck-gfx.tal (graphique, device Screen+Controller) :
+( core.tal -- logique PARTAGEE entre writhdeck-cli.tal (console, device
+| Console) et writhdeck.tal (graphique, device Screen+Controller) :
 | tampon plat, edition, curseur/word-wrap, marges/.ini, classification
 | des titres, chargement/sauvegarde fichier. Tout ce qui touche a
 | l'AFFICHAGE (ANSI cote console, glyphes/Screen cote graphique) reste
@@ -18,7 +18,7 @@
 | en arriere) : |0030 pour les variables partagees (zero-page haut,
 | apres la plage |0000-|002f reservee aux quelques variables PROPRES a
 | chaque entree -- console : |0020-|002f ; graphique : |001c-|002f, voir
-| writhdeck-gfx.tal), |2000 pour le CODE partage ci-dessous (tres au-dela
+| writhdeck.tal), |2000 pour le CODE partage ci-dessous (tres au-dela
 | de la fin du code propre a n'importe quelle entree), |4000/|4100 pour
 | les tampons fichier/texte. Verifier via `.rom.sym` apres toute
 | modification significative de taille, des deux cotes (console ET
@@ -29,8 +29,8 @@
 
 |0030
 @wd-rows        $2  ( hauteur en RANGEES DE CARACTERES -- console : recue
-                    | par DSR (voir writhdeck.tal) ; graphique : Screen/height
-                    | / 16 (hauteur de glyphe), voir writhdeck-gfx.tal. )
+                    | par DSR (voir writhdeck-cli.tal) ; graphique : Screen/height
+                    | / 16 (hauteur de glyphe), voir writhdeck.tal. )
 @wd-cols        $2  ( largeur en COLONNES DE CARACTERES -- graphique : Screen/width / 8 )
 @wd-cursor      $2  ( decalage OCTET du curseur dans wd-buf )
 @wd-buflen      $2  ( octets utilises dans wd-buf )

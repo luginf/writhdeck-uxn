@@ -4,10 +4,10 @@ Portage Uxntal (langage d'assemblage de la VM [uxn](https://100r.co/site/uxn.htm
 de WrithDeck. Deux entrées produisant deux roms distincts, partageant
 toute la logique d'édition via `src/core.tal` (voir "Architecture
 console/graphique" plus bas) :
-- `src/writhdeck.tal` → `bin/writhdeck.rom`, device **Console** (mode
+- `src/writhdeck-cli.tal` → `bin/writhdeck-cli.rom`, device **Console** (mode
   terminal, ANSI/VT100) — le portage original, testé automatiquement
   (`tests/`, pty).
-- `src/writhdeck-gfx.tal` → `bin/writhdeck-gfx.rom`, device
+- `src/writhdeck.tal` → `bin/writhdeck.rom`, device
   **Screen+Controller+Mouse** (mode graphique, `uxnemu`) — ajouté
   ensuite ; testé sans fenêtre (captures PNG, `tests/gfx_*`) et avec le
   vrai `uxnemu` par injection d'événements SDL.
@@ -28,8 +28,8 @@ autre machine.
 ## État du projet (octobre 2026) — LIRE EN PREMIER
 
 ### Livrables et commandes
-- `make rom` → `bin/writhdeck.rom` (console, ~17 Ko) ; `make rom-gfx` →
-  `bin/writhdeck-gfx.rom` (graphique) ; `make test` = tests console pty +
+- `make rom-cli` → `bin/writhdeck-cli.rom` (console, ~17 Ko) ; `make rom` →
+  `bin/writhdeck.rom` (graphique) ; `make test` = tests console pty +
   `tests/check_layout.py` (aucun chevauchement code/données) + suite
   graphique ; `make layout` seul pour la carte mémoire.
 - Lanceur unique `./writhdeck-uxn` (sans argument : aide en anglais) :
@@ -150,7 +150,7 @@ de Ko est très lente (retour à la ligne quadratique).
 
 ### Pièges découverts depuis le piège #21
 1. `uxnasm` compte les lambdas (`?{ }`) sur UN OCTET : > 256 dans l'assemblage
-   => « Label duplicate: } » absurde. Tout `writhdeck-gfx.tal` utilise
+   => « Label duplicate: } » absurde. Tout `writhdeck.tal` utilise
    `?&kN ... &kN` (équivalent exact sans lambda) ; faire pareil pour tout
    nouveau bloc gfx. Le cœur partagé et la console utilisent encore `?{ }`.
 2. Un vecteur (on-reset, on-first-frame, on-button, on-mouse…) finit par `BRK`,
@@ -235,7 +235,7 @@ ressort inchangé.
   EQU/EQU2, layout de System, méthode de debug...) -- à lire AVANT de toucher
   du nouveau code Uxntal.
 - `docs/ARCHITECTURE.md` : architecture console/graphique, pièges #17-#21.
-- `src/writhdeck.tal` / `src/writhdeck-gfx.tal` : les deux entrées ;
+- `src/writhdeck-cli.tal` / `src/writhdeck.tal` : les deux entrées ;
   `src/core.tal` : logique partagée.
 - `tests/` : `make test` (console pty + graphique sans fenêtre + carte mémoire).
 - `../writhdeck-c` et `../writhdeck-asm` : ports de référence pour la logique

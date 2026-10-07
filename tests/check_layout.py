@@ -4,7 +4,7 @@
 import sys
 from pathlib import Path
 R = Path(__file__).resolve().parent.parent / "bin"
-LIMITS = {"writhdeck.rom": ("ulog", None), "writhdeck-gfx.rom": ("ulog", None)}
+LIMITS = {"writhdeck-cli.rom": ("ulog", None), "writhdeck.rom": ("ulog", None)}
 ok = True
 for name, (data_label, _) in LIMITS.items():
     rom, sym = R / name, R / (name + ".sym")

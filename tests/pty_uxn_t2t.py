@@ -1,6 +1,6 @@
 """txt2tags heading detection/coloring (`= Title =`, `== Title ==`, ...).
 
-See is-heading-t2t in src/writhdeck.tal.
+See is-heading-t2t in src/writhdeck-cli.tal.
 """
 from pathlib import Path
 from pty_harness import run

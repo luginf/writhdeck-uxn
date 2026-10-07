@@ -3,7 +3,7 @@
 This is the long, detailed reference kept from the old README: scope, key handling, wrap algorithm, emulator quirks. For using the program read [MANUAL.md](MANUAL.md); the project overview is in [../README.md](../README.md).
 
 note: files are limited to 48k max in size!
-graphical version:  make run-gfx FILE=test.txt
+graphical version:  make run FILE=test.txt
 
 Uxntal port of [WrithDeck](https://github.com/luginf/writhdeck) for the
 [uxn](https://100r.co/site/uxn.html) virtual machine. Two entry points
@@ -14,14 +14,14 @@ producing one rom per output device is the idiomatic approach (matches
 how the uxn ecosystem itself handles this, e.g. separate `.tal` entry
 points per target rather than one rom that probes for a display):
 
-- **Console** (`src/writhdeck.tal` → `bin/writhdeck.rom`, run with
+- **Console** (`src/writhdeck-cli.tal` → `bin/writhdeck-cli.rom`, run with
   `uxncli`): the original port, a terminal program that emits plain
   ANSI/VT100 escapes over stdout and lets the host terminal do all
   rendering, exactly like `writhdeck-asm`. Byte-for-byte UTF-8
   passthrough falls out of this for free (no glyph/font work needed on
   the uxn side) — the Console device moves raw bytes, it never decodes
   them. Covered by the automated test suite (`tests/`).
-- **Graphical** (`src/writhdeck-gfx.tal` → `bin/writhdeck-gfx.rom`, run
+- **Graphical** (`src/writhdeck.tal` → `bin/writhdeck.rom`, run
   with `uxnemu`): draws its own 8x16 bitmap font via the Screen device
   and reads input via the Controller device. See "Graphical mode"
   below — **this entry has never been visually verified** (no display
@@ -35,13 +35,13 @@ not a feature-complete one. See "Known limitations" below.
 ## Building and running
 
 ```sh
-make rom              # assembles src/writhdeck.tal -> bin/writhdeck.rom
+make rom-cli              # assembles src/writhdeck-cli.tal -> bin/writhdeck-cli.rom
 ./writhdeck-uxn path   # opens path;  ./writhdeck-uxn -n  starts an empty draft
-make run FILE=path    # equivalent, via the Makefile
+make run-cli FILE=path    # equivalent, via the Makefile
 make test             # builds the rom, then runs the pty regression suite in tests/
 
-make rom-gfx           # assembles src/writhdeck-gfx.tal -> bin/writhdeck-gfx.rom
-make run-gfx FILE=path # runs it via uxnemu (needs a real display)
+make rom           # assembles src/writhdeck.tal -> bin/writhdeck.rom
+make run FILE=path # runs it via uxnemu (needs a real display)
 ```
 
 `writhdeck-uxn` is the single launcher for both builds:
@@ -78,7 +78,7 @@ response), that axis falls back to the previous fixed default (24
 rows / 80 cols). A pty-based test harness must inject the `ESC[row;
 colR` reply itself (no real terminal is present to answer) or boot
 never proceeds — see `wd-sz-state`/`on-sizereply` in
-`src/writhdeck.tal`.
+`src/writhdeck-cli.tal`.
 
 ### Sandbox note
 
@@ -181,7 +181,7 @@ heading *level* for color purposes (matching `writhdeck-c`/
 
 - **Markdown**: `# Title` through `###### Title` (1 to 6 `#`
   characters, a mandatory space, then non-empty content). See
-  `is-heading` in `src/writhdeck.tal`.
+  `is-heading` in `src/writhdeck-cli.tal`.
 - **txt2tags**: `= Title =` (a single `=`, the same default marker as
   `writhdeck-c`/`writhdeck-asm`'s `heading_marker`, symmetric at both
   ends, non-empty content between them, leading/trailing whitespace
@@ -211,11 +211,11 @@ Home/End still jump to the logical line's start/end, matching
 `writhdeck-c`'s own `editor_move_home`/`editor_move_end`. Vertical
 scrolling also operates in visual rows, so `wd-scroll` can point
 mid-line once a line wraps. See `wrap-row-end`/`wrap-next-start`/
-`visual-row-start`/`visual-row-before` in `src/writhdeck.tal`.
+`visual-row-start`/`visual-row-before` in `src/writhdeck-cli.tal`.
 
 ## Graphical mode
 
-`src/writhdeck-gfx.tal` (→ `bin/writhdeck-gfx.rom`, run with `uxnemu`)
+`src/writhdeck.tal` (→ `bin/writhdeck.rom`, run with `uxnemu`)
 shares every bit of buffer/editing/word-wrap/margin/`.ini`/heading
 logic with the console port (`src/core.tal`); only the I/O layer
 differs. It draws an 8x16 bitmap font (`terminus01x02`, copied as-is
@@ -236,15 +236,15 @@ for the console build — `on-argv` in `core.tal` captures it into
 `wd-fname` and loads it before the first frame is drawn:
 
 ```
-uxnemu bin/writhdeck-gfx.rom path/to/file.txt
+uxnemu bin/writhdeck.rom path/to/file.txt
 # or
-make run-gfx FILE=path/to/file.txt
+make run FILE=path/to/file.txt
 ```
 
 **Window size.** Default is 960x576 (120x36 cells). Pass an optional
 second argument `WIDTHxHEIGHT` (pixels, 256..2048 x 128..1536, rounded
-to multiples of 8/16): `uxnemu bin/writhdeck-gfx.rom file.txt 1280x800`
-(`make run-gfx FILE=file.txt SIZE=1280x800`). `uxnemu -2x ...` also
+to multiples of 8/16): `uxnemu bin/writhdeck.rom file.txt 1280x800`
+(`make run FILE=file.txt SIZE=1280x800`). `uxnemu -2x ...` also
 zooms the whole window.
 
 **Use `uxnemu`, not `uxn2`, to load files.** The `uxn2` build checked
@@ -257,7 +257,7 @@ starts with an empty buffer (status bar still shows the name). Verified
 with a minimal ROM unrelated to this project. `uxnemu` and `uxncli`
 are unaffected.
 
-`uxn2 bin/writhdeck-gfx.rom < file.txt` does **not** load `file.txt` —
+`uxn2 bin/writhdeck.rom < file.txt` does **not** load `file.txt` —
 stdin redirection has nothing to do with argv. Both emulators also run
 a background thread that streams the real process stdin (piped file or
 not) into the `Console` device as keystrokes for as long as the
@@ -270,7 +270,7 @@ versions of this port left it bound to `on-argv`, so any stray stdin
 traffic (e.g. `< file.txt`) kept re-triggering a full reload on every
 byte, which looked exactly like "nothing loads".
 
-Launching with **no file argument at all** (`uxnemu bin/writhdeck-gfx.rom`,
+Launching with **no file argument at all** (`uxnemu bin/writhdeck.rom`,
 empty draft) now works too — it used to leave a permanently black
 window. Neither emulator sends a single `Console` event of any kind
 when there's no extra argument (their argv-forwarding loop in `main()`
@@ -322,7 +322,7 @@ limitations".
 
 ### Testing the graphical build without a window
 
-`python3 tests/gfx_headless.py bin/writhdeck-gfx.rom script.txt [rom args]`
+`python3 tests/gfx_headless.py bin/writhdeck.rom script.txt [rom args]`
 builds a scripted copy of `uxn2.c` (no SDL window, so no focus stealing;
 the upstream File bug is patched in that copy) and replays commands
 (`frame`, `key text`, `ctrl q`, `btn 0x20`, `enter`, `bksp`, `shot out.png`).
@@ -339,7 +339,7 @@ the upstream File bug is patched in that copy) and replays commands
 | Cream 10x16 proportional (`creamprop`) | `fonts/Cream16x10.psf` | the same glyphs, each trimmed to its ink and given 2 px of spacing by `tools/mkfont.py` (space 5 px), so you get the real accents with variable widths |
 
 All the fonts (VGA included) are **inside the rom file**, not read from outside:
-`make rom-gfx` runs `tools/mkfont.py` (builds `fonts/fonts.bank` from the
+`make rom` runs `tools/mkfont.py` (builds `fonts/fonts.bank` from the
 `.psf` and `.uf2` sources) and `tools/append_bank.py`, which pads the rom to
 0xff00 bytes and appends the font data; Varvara loads everything past
 0xffff into expansion bank 1, from where `System/expansion` copies one
@@ -422,7 +422,7 @@ KB without a newline) make word-wrap slow.
   uses, and uxn gives no fault protection at all — a stack imbalance
   causes silent data corruption (garbage jumps), never a crash or error
   message. Verification instead lives in `tests/`: Python scripts that
-  drive the compiled `bin/writhdeck.rom` through `uxncli` under a real
+  drive the compiled `bin/writhdeck-cli.rom` through `uxncli` under a real
   `pty` (scripting keystrokes, reading back the ANSI output, checking
   the saved file's bytes), the same style used to validate
   `writhdeck-asm`'s terminal code. Run them with `make test` (builds
@@ -431,7 +431,7 @@ KB without a newline) make word-wrap slow.
   own, so `tests/pty_harness.py` answers it for every test — any new
   test script should go through that harness rather than driving
   `uxncli` directly. **`tests/` only covers the console build** —
-  `writhdeck-gfx.tal` has no automated coverage at all, console-mode
+  `writhdeck.tal` has no automated coverage at all, console-mode
   pty tricks don't apply to a Screen-device program (see "Graphical
   mode").
 
@@ -453,13 +453,13 @@ core.tal` includes (same idiom `left.tal` uses for `menu.tal`/
   (`compute-layout`/`load-config`/`parse-ini-*`), heading
   classification (`is-heading`/`is-heading-t2t`). Also `wd-fname`/
   `wd-buf`, the fixed-address data buffers both entries share.
-- **`src/writhdeck.tal`**: console entry. Device declarations
+- **`src/writhdeck-cli.tal`**: console entry. Device declarations
   (`System`/`Console`), the DSR terminal-size dance (`send-size-query`/
   `on-sizereply`), the keypress dispatcher and escape-sequence state
   machine (`on-keypress`/`handle-escape`), the ANSI renderer
   (`wd-render`/`render-row`/`wd-status-bar`), and small ANSI/string
   utilities (`str-log`, `wd-print-dec`, `alt-buf-on`/`hide-cursor`/…).
-- **`src/writhdeck-gfx.tal`**: graphical entry. Device declarations
+- **`src/writhdeck.tal`**: graphical entry. Device declarations
   (`System`/`Screen`/`Controller`), the bitmap font and glyph/string/
   decimal drawing (`draw-char`/`draw-str`/`draw-dec`), the Controller
   dispatcher (`on-button`), and the pixel renderer (`gfx-render`/

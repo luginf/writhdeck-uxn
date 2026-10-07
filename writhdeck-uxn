@@ -3,8 +3,8 @@
 #
 #   writhdeck-uxn [options] [file]        (no argument: this help)
 #     -n, --new          empty draft, no file
-#     -c, --cli          terminal mode (default): bin/writhdeck.rom via uxncli
-#     -g, --gui          graphical mode: bin/writhdeck-gfx.rom via uxnemu
+#     -c, --cli          terminal mode (default): bin/writhdeck-cli.rom via uxncli
+#     -g, --gui          graphical mode: bin/writhdeck.rom via uxnemu
 #     -s, --size WxH     graphical window size in pixels (e.g. 1280x800)
 #     -z, --zoom N       graphical window zoom 1 to 3 (uxnemu -2x / -3x)
 #     -l, --light        graphical mode: black on white (Ctrl+D toggles)
@@ -68,8 +68,8 @@ fi
 
 if [ "$MODE" = cli ]; then
     [ -n "$SIZE$ZOOM$LIGHT$FONT" ] && echo "writhdeck-uxn: --size/--zoom/--light/--font ignored in terminal mode" >&2
-    ROM=$DIR/bin/writhdeck.rom
-    ensure_rom "$ROM" rom
+    ROM=$DIR/bin/writhdeck-cli.rom
+    ensure_rom "$ROM" rom-cli
     TTY=`stty -g`
     stty -ignbrk -brkint -ignpar -parmrk -inpck -istrip -inlcr -igncr -icrnl -ixon \
          -ixoff -icanon onlcr -echo -isig -iuclc -ixany -imaxbel -xcase min 1 time 0
@@ -79,8 +79,8 @@ if [ "$MODE" = cli ]; then
     exit $EXIT
 fi
 
-ROM=$DIR/bin/writhdeck-gfx.rom
-ensure_rom "$ROM" rom-gfx
+ROM=$DIR/bin/writhdeck.rom
+ensure_rom "$ROM" rom
 case "$SIZE" in
     ""|[0-9]*x[0-9]*) ;;
     *) echo "writhdeck-uxn: invalid size '$SIZE' (expected WIDTHxHEIGHT)" >&2; exit 2 ;;

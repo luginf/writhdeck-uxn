@@ -1,0 +1,465 @@
+( writhdeck-cli.tal -- entree CONSOLE (device Console, sequences ANSI/
+| VT100 -- PAS le device Screen) du portage Uxntal de WrithDeck. Voir
+| ../README.md pour le perimetre exact et les simplifications
+| assumees : curseur en decalage OCTET dans le tampon (pas de decodage
+| UTF-8 pour la logique de curseur -- le contenu lui-meme reste un
+| passthrough octet-a-octet fidele, donc les accents s'affichent/se
+| sauvegardent correctement), pas de tests automatises au-dela de
+| tests/ (pty). Taille du terminal detectee dynamiquement au boot
+| (DSR, voir send-size-query/on-sizereply) ; word-wrap greedy aux
+| limites de marge (voir wrap-row-end/visual-row-start dans core.tal).
+|
+| La logique d'edition/tampon/word-wrap/marges/.ini/classification de
+| titres est PARTAGEE avec l'entree graphique (writhdeck.tal) --
+| voir src/core.tal, inclus en toute fin de ce fichier. Ce fichier-ci
+| ne contient que ce qui est propre a la sortie CONSOLE : sequences
+| ANSI, machine a etats DSR/fleches, dispatch clavier Console/read.
+|
+| Polarite de "?{ }" (verifiee empiriquement avec un mini-programme
+| autonome, PAS documentee de memoire) : le bloc s'execute quand
+| l'octet depile est EXACTEMENT 0, il est SAUTE si l'octet est non nul.
+| REGLE MECANIQUE appliquee PARTOUT (ici et dans core.tal), sans
+| exception, pour eviter les erreurs de polarite : pour "si CONDITION
+| alors BLOC", toujours calculer le flag NATUREL de CONDITION avec
+| l'opcode qui correspond mot-a-mot (EQU pour "==", NEQ pour "!=", LTH
+| pour "<", GTH pour ">"), PUIS TOUJOURS ajouter "#00 EQU" avant "?{ }". )
+
+( pas de champ &vector ici -- System n'en a pas (contrairement a
+| Console/File), verifie dans uxn/src/devices/system.c (wst/rst=
+| 0x04/0x05, metadata=0x06-07, state=0x0f), identique a kibi.tal. )
+|04 @System/wst $1 &rst $1 &metadata $2 [ $6 ] &debug $1 &state $1
+
+%putc { .Console/write DEO }
+%csi { #1b .Console/write DEO #5b .Console/write DEO }
+%semicolon { #3b .Console/write DEO }
+
+( zero-page PROPRE a cette entree (les variables partagees sont dans
+| core.tal, a |0030) -- budget volontairement large (|0020-|002f). )
+|0020
+@wd-esc-state   $1  ( 0=idle 1=vu ESC 2=vu ESC[ )
+@wd-dcount      $1  ( wd-print-dec : nombre de chiffres empiles sur rst )
+@wd-hl         $1  ( 1 = la rangee en cours colore les marques en ligne )
+@wd-inm         $1  ( 1 = on est actuellement dans une marque )
+@wd-mst         $1  ( scratch : nouvel etat de marque )
+@wd-confirm     $1  ( 1 = confirmation de sortie en attente, voir try-quit )
+@wd-tmp34       $2  ( partage wd-render/render-row (rendu console) : fin
+                    | de la rangee affichee -- wd-render la calcule
+                    | (wrap-row-end), render-row la lit comme borne
+                    | d'impression. Propre a CETTE entree : le rendu
+                    | graphique a sa propre logique de bornage de rangee. )
+@wd-tmp35       $2  ( wd-render (rendu console) : debut de ligne LOGIQUE
+                    | de la rangee affichee, pour classifier
+                    | is-heading/is-heading-t2t sur la ligne ENTIERE
+                    | meme si la rangee courante est un segment enroule
+                    | autre que le premier. )
+
+( --- detection dynamique de la taille du terminal, au boot (voir
+| on-sizereply) : machine a etats qui lit la reponse DSR
+| "ESC[row;colR" a la requete ESC[999C ESC[999B ESC[6n envoyee par
+| send-size-query, idiome repris de kibi.tal (apps/kibi dans
+| l'ecosysteme uxn de reference). 0=attend ESC, 1=attend '[',
+| 2=accumule la rangee jusqu'a ';', 3=accumule la colonne jusqu'a 'R'. )
+@wd-sz-state    $1
+@wd-sz-row      $2  ( accumulateur decimal de la rangee )
+@wd-sz-col      $2  ( accumulateur decimal de la colonne )
+@wd-sz-digit    $1  ( scratch : chiffre courant (0-9) le temps de
+                    | pousser l'accumulateur*10 AVANT de le relire --
+                    | on-sizereply ne peut pas reread depuis un tampon
+                    | comme parse-ini-value (les octets arrivent un par
+                    | un via Console/read, jamais stockes), donc ce
+                    | scratch joue le meme role que la relecture memoire
+                    | ailleurs dans ce fichier. )
+
+|0100
+
+@on-reset ( -> )
+    ;wd-meta .System/metadata DEO2
+    alt-buf-on
+    #0000 .wd-arg-num STZ2
+    #00 .wd-fname-len STZ
+    ;on-argv .Console/vector DEO2
+BRK
+
+( Appelee par core-boot (core.tal) une fois le fichier/.ini charges.
+| Defauts de repli 24/80, ecrases par on-sizereply une fois la reponse
+| DSR recue -- conserves tels quels si un champ de la reponse parse a
+| 0 (rangee/colonne vide dans "ESC[row;colR", grammaire VT100 valide
+| mais degeneree). Bloque jusqu'a la reponse du terminal (meme
+| comportement que kibi.tal) : necessite un vrai terminal ANSI/VT100
+| (le wrapper `writhdeck` met deja le tty en mode raw), un harnais de
+| test pty doit injecter "ESC[row;colR" sinon le boot n'avance jamais
+| (voir tests/pty_harness.py). )
+@entry-finish-boot ( -- )
+    #0018 .wd-rows STZ2
+    #0050 .wd-cols STZ2
+    hide-cursor
+    #00 .wd-sz-state STZ
+    send-size-query
+    ;on-sizereply .Console/vector DEO2
+JMP2r
+
+( ESC[999C ESC[999B : pousse le curseur reel au coin bas-droit (au-dela
+| de toute taille de terminal plausible, il se clampe au bord) ; ESC[6n
+| (Device Status Report) : demande sa position, le terminal repond par
+| "ESC[row;colR" sur stdin -- lue octet par octet par on-sizereply,
+| memes sequences que kibi.tal/apps/kibi. )
+@send-size-query ( -- )
+    csi #39 putc #39 putc #39 putc #43 putc
+    csi #39 putc #39 putc #39 putc #42 putc
+    csi #36 putc #6e putc
+JMP2r
+
+( machine a etats pour "ESC[row;colR" -- voir wd-sz-state plus haut.
+| Une fois 'R' vu, applique les valeurs parsees (repli sur le defaut
+| deja en place si un champ est vide/degenere), puis seulement
+| maintenant bascule vers l'editeur reel (on-keypress + premier rendu). )
+@on-sizereply ( -> )
+    .Console/read DEI
+    .wd-sz-state LDZ #00 EQU #00 EQU ?{
+        DUP #1b EQU #00 EQU ?{ POP #01 .wd-sz-state STZ BRK }
+        POP BRK }
+    .wd-sz-state LDZ #01 EQU #00 EQU ?{
+        DUP #5b EQU #00 EQU ?{
+            POP #02 .wd-sz-state STZ #0000 .wd-sz-row STZ2 BRK }
+        POP #00 .wd-sz-state STZ BRK }
+    .wd-sz-state LDZ #02 EQU #00 EQU ?{
+        DUP #3b EQU #00 EQU ?{
+            POP #03 .wd-sz-state STZ #0000 .wd-sz-col STZ2 BRK }
+        DUP #30 SUB #09 GTH #00 EQU ?{ POP #00 .wd-sz-state STZ BRK }
+        #30 SUB .wd-sz-digit STZ
+        .wd-sz-row LDZ2 #000a MUL2
+        .wd-sz-digit LDZ #00 SWP
+        ADD2 .wd-sz-row STZ2
+        BRK }
+    ( etat 3 : accumule la colonne jusqu'a 'R' -- seul etat restant )
+    DUP #52 EQU #00 EQU ?{
+        POP
+        .wd-sz-row LDZ2 #0000 NEQ2 #00 EQU ?{ .wd-sz-row LDZ2 .wd-rows STZ2 }
+        .wd-sz-col LDZ2 #0000 NEQ2 #00 EQU ?{ .wd-sz-col LDZ2 .wd-cols STZ2 }
+        ;on-keypress .Console/vector DEO2
+        wd-render
+        BRK }
+    DUP #30 SUB #09 GTH #00 EQU ?{ POP #00 .wd-sz-state STZ BRK }
+    #30 SUB .wd-sz-digit STZ
+    .wd-sz-col LDZ2 #000a MUL2
+    .wd-sz-digit LDZ #00 SWP
+    ADD2 .wd-sz-col STZ2
+BRK
+
+( --- boucle interactive --- )
+@on-keypress ( -> )
+    .Console/read DEI
+    .wd-esc-state LDZ #00 NEQ #00 EQU ?{ handle-escape BRK }
+    .wd-confirm LDZ #00 NEQ #00 EQU ?{ handle-confirm BRK }
+
+    DUP #1b EQU #00 EQU ?{ POP #01 .wd-esc-state STZ BRK }
+    DUP #11 EQU #00 EQU ?{ POP try-quit BRK }
+    DUP #13 EQU #00 EQU ?{ POP save-file wd-render BRK }
+    DUP #1a EQU #00 EQU ?{ POP undo after-edit BRK }
+    DUP #19 EQU #00 EQU ?{ POP redo after-edit BRK }
+    DUP #0d EQU #00 EQU ?{ POP #0a insert-byte after-edit BRK }
+    DUP #0a EQU #00 EQU ?{ POP #0a insert-byte after-edit BRK }
+    DUP #7f EQU #00 EQU ?{ POP backspace after-edit BRK }
+    DUP #20 LTH #00 EQU ?{ POP BRK }
+    insert-byte after-edit
+BRK
+
+@handle-escape ( byte -- )
+    .wd-esc-state LDZ #01 EQU #00 EQU ?{
+        DUP #5b EQU #00 EQU ?{ POP #02 .wd-esc-state STZ BRK }
+        POP #00 .wd-esc-state STZ BRK }
+    #00 .wd-esc-state STZ
+    DUP #41 EQU #00 EQU ?{ POP move-up after-move BRK }
+    DUP #42 EQU #00 EQU ?{ POP move-down after-move BRK }
+    DUP #43 EQU #00 EQU ?{ POP move-right after-move BRK }
+    DUP #44 EQU #00 EQU ?{ POP move-left after-move BRK }
+    DUP #48 EQU #00 EQU ?{ POP move-home after-move BRK }
+    DUP #46 EQU #00 EQU ?{ POP move-end after-move BRK }
+    POP
+BRK
+
+@after-edit ( -- )
+    #01 .wd-dirty STZ
+    clamp-scroll
+    wd-render
+JMP2r
+
+@after-move ( -- )
+    clamp-scroll
+    wd-render
+JMP2r
+
+( Ctrl+Q : quitte tout de suite si rien n'a change, sinon demande
+| confirmation dans la barre d'etat -- s sauvegarde puis quitte, y quitte
+| sans sauvegarder, toute autre touche annule. )
+@try-quit ( -- )
+    .wd-dirty LDZ #00 EQU ?{
+        #01 .wd-confirm STZ
+        wd-render
+        JMP2r }
+    quit
+JMP2r
+
+@handle-confirm ( byte -- )
+    #00 .wd-confirm STZ
+    DUP #79 EQU #00 EQU ?{ POP quit BRK }
+    DUP #59 EQU #00 EQU ?{ POP quit BRK }
+    .wd-fname-len LDZ #00 EQU ?{
+        DUP #73 EQU #00 EQU ?{ POP save-file quit BRK }
+        DUP #53 EQU #00 EQU ?{ POP save-file quit BRK } }
+    POP
+    wd-render
+BRK
+
+( hooks de core.tal : largeur d'un caractere. Console = 1 colonne par
+| caractere UTF-8, quel que soit son nombre d'octets. )
+@entry-cw ( pos* -- )
+    #01 .wd-cww STZ
+    #01 .wd-cwn STZ
+    &loop
+        .wd-cwn LDZ #04 LTH #00 EQU ?&done
+        DUP2 #00 .wd-cwn LDZ ADD2 .wd-buflen LDZ2 LTH2 #00 EQU ?&done
+        DUP2 #00 .wd-cwn LDZ ADD2 is-cont #00 EQU ?&done
+        .wd-cwn LDZ INC .wd-cwn STZ
+        !&loop
+    &done
+    POP2
+JMP2r
+
+@entry-layout ( -- ) JMP2r
+
+@quit ( -- )
+    alt-buf-off
+    #80 .System/state DEO
+BRK
+
+( imprime n* espaces -- utilise pour la marge gauche avant chaque
+| rangee de texte. wd-tmp20 = scratch prive DE CETTE ENTREE (le rendu
+| console est la seule chose qui a besoin d'imprimer des espaces --
+| l'entree graphique saute juste des colonnes de pixels). )
+@wd-tmp20 $2
+@print-spaces ( n* -- )
+    .wd-tmp20 STZ2
+    &loop
+        .wd-tmp20 LDZ2 #0000 NEQ2 #00 EQU ?{
+            #20 putc
+            .wd-tmp20 LDZ2 #0001 SUB2 .wd-tmp20 STZ2
+            !&loop }
+JMP2r
+
+( --- rendu --- )
+( imprime les octets [.wd-tmp1, .wd-tmp34) -- l'appelant (wd-render) a
+| deja calcule .wd-tmp34 via wrap-row-end, donc plus besoin ici de
+| compter les colonnes ni de chercher le '\n' : la borne fournie
+| respecte deja la largeur ET ne traverse jamais un saut de ligne. )
+@render-row ( -- )
+    &loop
+        .wd-tmp1 LDZ2 .wd-tmp34 LDZ2 LTH2 #00 EQU ?{
+            .wd-hl LDZ #00 EQU ?&plain
+            .wd-tmp1 LDZ2 mark-step
+            .wd-tmp1 LDZ2 .wd-mend LDZ2 LTH2 .wd-mst STZ
+            .wd-mst LDZ .wd-inm LDZ EQU ?&plain
+            .wd-mst LDZ .wd-inm STZ
+            .wd-mst LDZ #00 EQU ?&off
+            ansi-mark-on
+            !&plain
+            &off
+            ansi-reset
+            &plain
+            .wd-tmp1 LDZ2 ;wd-buf ADD2 LDA putc
+            .wd-tmp1 LDZ2 #0001 ADD2 .wd-tmp1 STZ2
+            !&loop }
+JMP2r
+
+( Trois phases, meme decoupage que draw_editor cote writhdeck-asm :
+| marge du haut (rangees vides), zone de texte (wd-usable-rows
+| rangees, chacune indentee de wd-eff-margin-cols colonnes), marge du
+| bas (rangees vides jusqu'a juste avant la barre de statut). )
+@wd-render ( -- )
+    hide-cursor
+    #ffff .wd-mline STZ2
+    #0000 .wd-mend STZ2
+    reset-cursor
+    compute-layout
+
+    #0000 .wd-tmp2 STZ2
+    &top-margin-loop
+        .wd-tmp2 LDZ2 .wd-text-top LDZ2 LTH2 #00 EQU ?{
+            clear-eol
+            #0a putc
+            .wd-tmp2 LDZ2 #0001 ADD2 .wd-tmp2 STZ2
+            !&top-margin-loop }
+
+    .wd-scroll LDZ2 .wd-tmp1 STZ2
+    #0000 .wd-tmp2 STZ2
+    &row-loop
+        .wd-tmp2 LDZ2 .wd-usable-rows LDZ2 LTH2 #00 EQU ?{
+            .wd-eff-margin-cols LDZ2 print-spaces
+            ( classification sur le DEBUT DE LIGNE LOGIQUE (wd-tmp35),
+            | pas sur .wd-tmp1 qui peut n'etre qu'un segment enroule au
+            | milieu de cette ligne -- sinon un titre dont le marqueur
+            | tient sur la premiere rangee visuelle mais pas sur ses
+            | rangees suivantes perdrait sa couleur a partir de la 2e
+            | rangee. Colore la ligne ENTIERE (toutes ses rangees),
+            | meme convention que draw_editor cote writhdeck-asm. Les
+            | deux styles (Markdown et txt2tags) partagent la meme
+            | couleur, comme classify_line cote C/asm qui ne renvoie
+            | qu'un seul LINE_HEADING quel que soit le marqueur. )
+            .wd-tmp1 LDZ2 line-start .wd-tmp35 STZ2
+            .wd-tmp35 LDZ2 is-heading
+            .wd-tmp35 LDZ2 is-heading-t2t
+            ORA #00 NEQ #00 EQU ?{ ansi-heading-on }
+            ( marques en ligne seulement hors titres et commentaires )
+            #00 .wd-hl STZ
+            #00 .wd-inm STZ
+            .wd-tmp35 LDZ2 is-heading .wd-tmp35 LDZ2 is-heading-t2t ORA ?&nothl
+            .wd-tmp35 LDZ2 is-comment ?&nothl
+            #01 .wd-hl STZ
+            &nothl
+            .wd-tmp35 LDZ2 is-comment #00 EQU ?&notcm ansi-comment-on &notcm
+            .wd-tmp35 LDZ2 .wd-tmp1 LDZ2 mark-prime
+            .wd-tmp1 LDZ2 .wd-text-width LDZ2 wrap-row-end .wd-tmp34 STZ2
+            render-row
+            ansi-reset
+            clear-eol
+            #0a putc
+            .wd-tmp34 LDZ2 wrap-next-start .wd-tmp1 STZ2
+            .wd-tmp2 LDZ2 #0001 ADD2 .wd-tmp2 STZ2
+            !&row-loop }
+
+    .wd-text-top LDZ2 .wd-usable-rows LDZ2 ADD2 .wd-tmp2 STZ2
+    &bottom-margin-loop
+        .wd-tmp2 LDZ2 .wd-rows LDZ2 #0001 SUB2 LTH2 #00 EQU ?{
+            clear-eol
+            #0a putc
+            .wd-tmp2 LDZ2 #0001 ADD2 .wd-tmp2 STZ2
+            !&bottom-margin-loop }
+
+    wd-status-bar
+    wd-position-cursor
+    show-cursor
+JMP2r
+
+@wd-status-bar ( -- )
+    .wd-rows LDZ2 #0001 SUB2 .wd-tmp5 STZ2
+    csi
+    .wd-tmp5 LDZ2 #0001 ADD2 wd-print-dec
+    semicolon
+    #0001 wd-print-dec
+    #48 putc
+    ansi-reverse
+    .wd-confirm LDZ #00 EQU ?{
+        .wd-fname-len LDZ #00 EQU #00 EQU ?{ ;msg-quit-draft str-log clear-eol ansi-reset JMP2r }
+        ;msg-quit str-log clear-eol ansi-reset
+        JMP2r }
+    .wd-fname-len LDZ #00 NEQ #00 EQU ?{ wd-fname-status }
+    .wd-fname-len LDZ #00 EQU #00 EQU ?{ ;draft-label str-log }
+    ;status-sep str-log
+    .wd-cursor LDZ2 line-start count-lines-from-zero #0001 ADD2 wd-print-dec
+    ;status-comma str-log
+    .wd-cursor LDZ2 .wd-cursor LDZ2 line-start SUB2 #0001 ADD2 wd-print-dec
+    .wd-dirty LDZ #00 NEQ #00 EQU ?{ ;status-dirty str-log }
+    .wd-trunc LDZ #00 EQU ?&nt ;status-trunc str-log &nt
+    .wd-buflen LDZ2 #b800 LTH2 ?&nf ;status-full str-log &nf
+    clear-eol
+    ansi-reset
+JMP2r
+
+@wd-fname-status ( -- )
+    ;wd-fname str-log
+JMP2r
+
+( Rangee/colonne ECRAN decalees par wd-text-top/wd-eff-margin-cols
+| (voir compute-layout, deja appelee par wd-render juste avant cet
+| appel -- valeurs encore fraiches). )
+@wd-position-cursor ( -- )
+    .wd-cursor LDZ2 visual-row-start .wd-tmp1 STZ2
+    .wd-scroll LDZ2 .wd-tmp1 LDZ2 count-visual-rows .wd-tmp2 STZ2
+    .wd-cursor LDZ2 .wd-tmp1 LDZ2 SUB2 .wd-tmp3 STZ2
+    csi
+    .wd-tmp2 LDZ2 .wd-text-top LDZ2 ADD2 #0001 ADD2 wd-print-dec
+    semicolon
+    .wd-tmp3 LDZ2 .wd-eff-margin-cols LDZ2 ADD2 #0001 ADD2 wd-print-dec
+    #48 putc
+JMP2r
+
+( dword* -- : imprime n en decimal, sans zeros de tete, sans saut de
+| ligne. Chiffres empiles sur la pile de retour (LSB extrait en premier
+| -- donc empiler-au-fur-et-a-mesure puis depiler donne le bon ordre,
+| MSB en premier), narrowing short->octet via STH POP STHr (meme
+| technique que shrt/dec-str dans kibi.tal). )
+@wd-print-dec ( n* -- )
+    DUP2 #0000 NEQ2 #00 EQU ?{
+        #00 .wd-dcount STZ
+        &extract
+            DUP2 #0000 NEQ2 #00 EQU ?{
+                DUP2 #000a DIV2
+                DUP2 #000a MUL2
+                STH2 SWP2 STH2r SUB2
+                STH POP STHr
+                #30 ADD
+                STH
+                .wd-dcount LDZ INC .wd-dcount STZ
+                !&extract }
+        POP2
+        &print
+            .wd-dcount LDZ #00 NEQ #00 EQU ?{
+                STHr putc
+                .wd-dcount LDZ #01 SUB .wd-dcount STZ
+                !&print }
+        JMP2r }
+    POP2 #30 putc
+JMP2r
+
+( --- helpers ANSI --- )
+@str-log ( str* -- )
+    LDAk #00 NEQ #00 EQU ?{
+        LDAk putc
+        INC2
+        !str-log }
+    POP2
+JMP2r
+
+@alt-buf-on ( -- ) ;ansi-alt-buf-on str-log JMP2r
+@alt-buf-off ( -- ) ;ansi-alt-buf-off str-log JMP2r
+@hide-cursor ( -- ) ;ansi-hide-cursor str-log JMP2r
+@show-cursor ( -- ) ;ansi-show-cursor str-log JMP2r
+@reset-cursor ( -- ) ;ansi-reset-cursor str-log JMP2r
+@clear-eol ( -- ) ;ansi-clear-eol str-log JMP2r
+@ansi-reverse ( -- ) ;ansi-reverse-seq str-log JMP2r
+@ansi-reset ( -- ) ;ansi-reset-seq str-log JMP2r
+@ansi-heading-on ( -- ) ;ansi-heading-seq str-log JMP2r
+@ansi-comment-on ( -- ) ;ansi-comment-seq str-log JMP2r
+@ansi-mark-on ( -- ) ;ansi-mark-seq str-log JMP2r
+
+@ansi-alt-buf-on [ 1b "[?1049h 00 ]
+@ansi-alt-buf-off [ 1b "[?1049l 00 ]
+@ansi-hide-cursor [ 1b "[?25l 00 ]
+@ansi-show-cursor [ 1b "[?25h 00 ]
+@ansi-reset-cursor [ 1b "[H 00 ]
+@ansi-clear-eol [ 1b "[K 00 ]
+@ansi-reverse-seq [ 1b "[7m 00 ]
+@ansi-reset-seq [ 1b "[0m 00 ]
+( rouge, meme sequence que UI_ATTR_HEADING cote writhdeck-asm
+| (ui_seq_attr_heading, src/ui_ansi.asm) -- pas de gras, ce port ne
+| combine pas plusieurs attributs SGR. )
+@ansi-heading-seq [ 1b "[31m 00 ]
+@ansi-comment-seq [ 1b "[32m 00 ]
+@ansi-mark-seq [ 1b "[36m 00 ]
+
+@msg-quit "Unsaved 20 "changes! 20 20 "s: 20 "save 20 "and 20 "quit 20 20 "y: 20 "quit 20 "without 20 "saving 20 20 "other 20 "key: 20 "cancel 00
+@msg-quit-draft "Unsaved 20 "draft! 20 20 "y: 20 "quit 20 "without 20 "saving 20 20 "other 20 "key: 20 "cancel 00
+@draft-label "[draft] 00
+@status-sep 20 "-- 20 00
+@status-comma 2c 00
+@status-dirty 20 "[+] 00
+@status-trunc 20 "[file 20 "too 20 "big, 20 "truncated: 20 "saving 20 "disabled] 00
+@status-full 20 "[buffer 20 "full] 00
+
+@wd-meta [ $1
+    "writhdeck-uxn 0a
+    "console-mode 0a 00 ]
+
+@con-end
+
+~src/core.tal

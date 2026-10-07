@@ -12,7 +12,7 @@ titres (`is-heading`/`is-heading-t2t`), chargement/sauvegarde
 (`load-file`/`save-file`, device `File`), et la capture d'argv
 (`on-argv`, device `Console` -- partagée car `console_arguments()` est
 utilisée par `uxnemu` ET `uxncli`, voir `uxn/src/uxnemu.c:488`). Inclus
-en toute fin de `writhdeck.tal` ET `writhdeck-gfx.tal` via `~src/
+en toute fin de `writhdeck-cli.tal` ET `writhdeck.tal` via `~src/
 core.tal` (même idiome que `left.tal`/`menu.tal`/`utils.tal` dans
 l'écosystème uxn de référence). Chaque entrée définit son propre
 `@entry-finish-boot` (appelé par `core-boot` une fois le fichier/.ini
@@ -30,17 +30,17 @@ graphique `gfx-*`), `|0030` pour les variables PARTAGÉES (`core.tal`),
 modification significative de taille d'un des deux fichiers, vérifier
 via `.rom.sym` (même technique qu'au piège #13) qu'aucun label
 n'atterrit dans une plage réservée à l'autre section, POUR LES DEUX
-ROMS -- un chevauchement dans `writhdeck-gfx.tal` ne casserait PAS les
+ROMS -- un chevauchement dans `writhdeck.tal` ne casserait PAS les
 tests automatisés (qui ne couvrent que la console), donc rien ne
 l'attraperait autrement.
 
-### 17. (OBSOLÈTE, historique) `writhdeck-gfx.tal` n'avait jamais été vérifié visuellement -- depuis : captures sans fenêtre, voir « État du projet »
+### 17. (OBSOLÈTE, historique) `writhdeck.tal` n'avait jamais été vérifié visuellement -- depuis : captures sans fenêtre, voir « État du projet »
 
 `uxnemu` (device Screen) a besoin d'un vrai serveur d'affichage SDL ;
 `uxnfb` (framebuffer Linux direct) a besoin d'un vrai `/dev/fb0` et de
 périphériques d'entrée réels. Aucun des deux n'est pilotable en boîte
 noire dans cet environnement (contrairement à `uxncli`, piloté via pty
-pour toute la suite `tests/`) -- `make rom-gfx` assemble sans erreur et
+pour toute la suite `tests/`) -- `make rom` assemble sans erreur et
 `.rom.sym` confirme l'absence de chevauchement d'adresses, mais rien de
 plus n'a jamais tourné à l'écran. Plusieurs bugs réels ont été trouvés
 et corrigés a posteriori par relecture manuelle méticuleuse (rejeu
@@ -85,9 +85,9 @@ device fixe contre le fichier `.c` source correspondant dans
 fichier `.tal` de référence sans le revérifier, même si ce fichier
 fonctionne (il peut cibler une version différente de la spec Varvara).
 
-### 18. `writhdeck-gfx.tal` restait abonné à `Console/vector` après le boot -- tout octet de stdin rechargeait le fichier en boucle
+### 18. `writhdeck.tal` restait abonné à `Console/vector` après le boot -- tout octet de stdin rechargeait le fichier en boucle
 
-Bug réel signalé par l'utilisateur : `uxn2 writhdeck-gfx.rom < fichier`
+Bug réel signalé par l'utilisateur : `uxn2 writhdeck.rom < fichier`
 "ne chargeait rien". Cause, trouvée en lisant le VRAI émulateur utilisé
 (`/temp/github/uxn-all/implementations/uxn2/uxn2.c`, PAS `uxnemu.c` --
 vérifier avec `md5sum`/`ls -la` lequel des deux binaires installés est
@@ -111,14 +111,14 @@ effet). Corrigé en ajoutant `#0000 .Console/vector DEO2` dans
 -- `console_input()` côté C saute `uxn_eval` entièrement quand
 `console_vector==0`, donc ça silence tout futur événement `Console`
 proprement. **Ne pas répliquer ce "unbind" côté console
-(`writhdeck.tal`)** : là, `Console/vector` DOIT rester branché en
+(`writhdeck-cli.tal`)** : là, `Console/vector` DOIT rester branché en
 permanence -- c'est le mécanisme même par lequel les frappes clavier
 arrivent (`on-keypress`), pas un vestige du boot.
 
 ### 19. Accents dans un COMMENTAIRE `.tal` collés à une parenthèse : `uxnasm` lit `char` comme SIGNÉ, tout octet UTF-8 >=0x80 devient un "espace"
 
 Bug réel rencontré en ajoutant le fallback d'accents latin-1 ci-dessous
-(`gfx-utf8-decode`) : `make rom-gfx` échouait avec `Comment incomplete`
+(`gfx-utf8-decode`) : `make rom` échouait avec `Comment incomplete`
 alors que chaque paire de parenthèses semblait équilibrée à l'œil.
 Cause, trouvée en lisant `walkcomment()` dans `uxn/src/uxnasm.c` : la
 variable qui reçoit chaque octet lu est déclarée `char c` (SIGNÉ sur ce
@@ -147,10 +147,10 @@ ce projet quand une formulation ASCII équivalente existe -- le risque
 ne vaut pas le gain esthétique, et ce piège est facile à réintroduire
 sans y penser en écrivant en français.
 
-### 20. `writhdeck-gfx.tal` lancé SANS argument fichier : écran noir pour toujours -- `core-boot` ne demarrait QUE via `on-argv`
+### 20. `writhdeck.tal` lancé SANS argument fichier : écran noir pour toujours -- `core-boot` ne demarrait QUE via `on-argv`
 
 Bug réel signalé par l'utilisateur juste après le correctif du piège
-#18 ci-dessus : `uxn2 bin/writhdeck-gfx.rom` (sans le moindre argument
+#18 ci-dessus : `uxn2 bin/writhdeck.rom` (sans le moindre argument
 fichier, cas "brouillon vide") affichait un écran entièrement noir, en
 permanence. Cause : `core-boot` (donc le tout premier `gfx-render`)
 n'était déclenché QUE par la branche de repli de `on-argv`
@@ -193,7 +193,7 @@ rester idempotent si le déclencheur "normal" a déjà fait le travail.
 ### 21. Le mode graphique PEUT être testé ici (DISPLAY=:0 + xdotool + import) ; `uxn2` ne charge aucun fichier (bug émulateur)
 
 Contrairement à ce que dit le piège #17, un affichage X existe :
-`uxnemu bin/writhdeck-gfx.rom f.txt &`, puis `xdotool search --pid`,
+`uxnemu bin/writhdeck.rom f.txt &`, puis `xdotool search --pid`,
 `xdotool key/type`, `import -window ID out.png` et lecture du PNG.
 Vérifié : chargement, saisie, flèches, Ctrl+S fonctionnent sous
 `uxnemu` (fichier dans le cwd, voir piège #6). Sous `uxn2` (source

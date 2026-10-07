@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pilote writhdeck-gfx.rom SANS fenetre ni focus : emulateur uxn2 compile
+"""Pilote writhdeck.rom SANS fenetre ni focus : emulateur uxn2 compile
 a partir de ses sources avec un mode scripte (pas de SDL video, touches
 injectees directement dans le Controller, capture PPM -> PNG).
 

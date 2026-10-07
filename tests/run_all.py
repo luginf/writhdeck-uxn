@@ -1,6 +1,6 @@
 """Run every pty_uxn_*.py test in this directory as a subprocess and
-report pass/fail. Requires bin/writhdeck.rom to already be built
-(`make rom`).
+report pass/fail. Requires bin/writhdeck-cli.rom to already be built
+(`make rom-cli`).
 """
 import subprocess
 import sys

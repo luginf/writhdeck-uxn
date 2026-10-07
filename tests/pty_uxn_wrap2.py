@@ -1,7 +1,7 @@
 """Up/Down movement across wrapped visual rows, and heading color staying
 on every wrapped segment of a heading line, not just the first.
 See visual-row-start/visual-row-before/move-up/move-down in
-src/writhdeck.tal.
+src/writhdeck-cli.tal.
 """
 import re
 from pathlib import Path

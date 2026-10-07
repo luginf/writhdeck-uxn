@@ -8,13 +8,13 @@ editing core:
 
 | Build | File | Runs with | Needs |
 | --- | --- | --- | --- |
-| Terminal | `writhdeck.rom` | `uxncli` | an ANSI/VT100 terminal |
-| Graphical | `writhdeck-gfx.rom` | `uxnemu` | a window; the emulator must support expansion memory (`uxncli`, `uxnemu`, `uxn2` do) |
+| Terminal | `writhdeck-cli.rom` | `uxncli` | an ANSI/VT100 terminal |
+| Graphical | `writhdeck.rom` | `uxnemu` | a window; the emulator must support expansion memory (`uxncli`, `uxnemu`, `uxn2` do) |
 
 ## Install and run
 
 ```
-make rom rom-gfx          # needs uxnasm and python3
+make rom rom-cli          # needs uxnasm and python3
 ./writhdeck-uxn notes.txt # terminal build
 ./writhdeck-uxn -g notes.txt
 ```
@@ -34,7 +34,7 @@ It opens the file from the file's own directory (the uxn File device cannot
 reach paths outside the current directory), rebuilds a rom that is older than
 its sources, and puts the terminal in raw mode for the terminal build. Set
 `UXNCLI` / `UXNEMU` to choose the emulators. You can also run the roms
-directly: `uxnemu writhdeck-gfx.rom notes.txt 1280x800 light f2`.
+directly: `uxnemu writhdeck.rom notes.txt 1280x800 light f2`.
 **Do not use `uxn2` to open files**: that build has a bug that truncates the
 File device addresses, so nothing loads (the `left` editor is affected too).
 

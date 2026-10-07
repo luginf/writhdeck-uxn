@@ -1,6 +1,6 @@
 """writhd.ini margin_cols/margin_rows: defaults, custom values, cursor-position
 offsetting, and the small-terminal fallback to 0. See compute-layout and
-load-config in src/writhdeck.tal.
+load-config in src/writhdeck-cli.tal.
 """
 from pathlib import Path
 from pty_harness import run

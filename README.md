@@ -4,13 +4,13 @@ A distraction-free text editor for notes (plain text, txt2tags, markdown),
 written in Uxntal for the [uxn](https://100r.co/site/uxn.html) virtual
 machine: a port of [WrithDeck](https://github.com/luginf/writhdeck).
 
-- **Terminal** build (`writhdeck.rom`, run with `uxncli`) and **graphical**
-  build (`writhdeck-gfx.rom`, run with `uxnemu`) with search/replace, undo,
+- **Terminal** build (`writhdeck-cli.rom`, run with `uxncli`) and **graphical**
+  build (`writhdeck.rom`, run with `uxnemu`) with search/replace, undo,
   selection, mouse, table of contents, themes and four fonts.
 - Full UTF-8 handling (accented French works everywhere).
 
 ```
-make rom rom-gfx            # needs uxnasm and python3
+make rom rom-cli            # needs uxnasm and python3
 ./writhdeck-uxn -g notes.txt
 ./writhdeck-uxn             # help
 ```

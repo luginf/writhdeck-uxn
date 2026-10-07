@@ -6,7 +6,7 @@ import os, subprocess, sys, tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-ROM = HERE.parent / "bin" / "writhdeck-gfx.rom"
+ROM = HERE.parent / "bin" / "writhdeck.rom"
 SRC = os.environ.get("UXN2_SRC", "/temp/github/uxn-all/implementations/uxn2/uxn2.c")
 if not Path(SRC).exists():
     print("SKIP gfx_regress: uxn2 sources not found (set UXN2_SRC)"); sys.exit(0)

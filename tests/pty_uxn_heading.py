@@ -1,6 +1,6 @@
 """Markdown heading detection/coloring (`# Title` .. `###### Title`).
 
-See is-heading in src/writhdeck.tal.
+See is-heading in src/writhdeck-cli.tal.
 """
 import re
 from pathlib import Path

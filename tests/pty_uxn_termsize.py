@@ -1,5 +1,5 @@
 """Dynamic terminal-size detection via DSR at boot. See send-size-query /
-on-sizereply in src/writhdeck.tal -- this replaced a hardcoded 24x80 that
+on-sizereply in src/writhdeck-cli.tal -- this replaced a hardcoded 24x80 that
 clipped the text area to a fake width on any wider real terminal.
 """
 import os

@@ -1,7 +1,7 @@
 /* Injecte des evenements SDL scriptes dans le VRAI uxnemu, sans fenetre ni focus :
    gcc -shared -fPIC -o shim.so uxnemu_shim.c $(sdl2-config --cflags) -ldl
    SHIMQ=1 SDL_RENDER_DRIVER=software SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
-     LD_PRELOAD=./shim.so SHIM="W,W,T:abc,W,D:400000e0,D:71,U:71,U:400000e0,W" uxnemu bin/writhdeck-gfx.rom f.txt
+     LD_PRELOAD=./shim.so SHIM="W,W,T:abc,W,D:400000e0,D:71,U:71,U:400000e0,W" uxnemu bin/writhdeck.rom f.txt
    SHIM : T:texte  D:sym_hex (KEYDOWN)  U:sym_hex (KEYUP)  W (attendre ~30 frames)
           M:x:y (mouvement souris)  P:n (bouton n enfonce)  R:n (relache).
    0x400000e0 = SDLK_LCTRL. Code de sortie 0 = le rom a quitte, 124 (timeout) = toujours la. */
