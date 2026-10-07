@@ -26,6 +26,6 @@ addresses). See `docs/MANUAL.md`.
 Credits: fonts from the Linux console fonts (VGA), Hundred Rabbits' `left`
 (cream, cream12; MIT) and this project (Cream 10x16).
 
-Note: the roms were renamed after this release was first published (they
-were `writhdeck-gfx.rom` and `writhdeck.rom`); the release assets and notes
-were updated, the `v0.1.0` tag's source tree still uses the old file names.
+Note: the roms were renamed shortly after this release was first published
+(they were `writhdeck-gfx.rom` and `writhdeck.rom`); the assets, notes and the
+`v0.1.0` tag were updated accordingly.

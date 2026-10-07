@@ -40,7 +40,7 @@ autre machine.
   Emulateur graphique par défaut `uxnemu` (jamais `uxn2`, voir pièges).
 - Release GitHub : `tools/release.sh vX.Y.Z [--dry-run]` construit les deux ROM dans
   `dist/` (+ SHA256SUMS, notes extraites de `docs/CHANGELOG.md`) et publie avec `gh`
-  (connecté au compte `luginf`) ou, à défaut, `$GH_TOKEN`. v0.1.0 est publiée (assets renommés après coup : `writhdeck.rom` = graphique, `writhdeck-cli.rom` = terminal ; le TAG pointe toujours vers le commit d'avant le renommage, l'arbre source du tag utilise les anciens noms) :
+  (connecté au compte `luginf`) ou, à défaut, `$GH_TOKEN`. v0.1.0 est publiée (assets renommés après coup : `writhdeck.rom` = graphique, `writhdeck-cli.rom` = terminal ; le tag a ensuite été déplacé (force) sur le commit du renommage) :
   https://github.com/luginf/writhdeck-uxn/releases/tag/v0.1.0 . Pour la suivante :
   ajouter une section `## vX.Y.Z` à `docs/CHANGELOG.md`, commiter, taguer
   (`git tag -a`, `git push origin vX.Y.Z`), puis lancer le script (si la release existe déjà il remplace les fichiers et les notes).
