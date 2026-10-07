@@ -63,5 +63,31 @@ case("esc clears selection", "hello\n", [SR]*3 + ["esc", "key X"], "helXlo\n")
 # file bigger than the buffer: notice first (any key closes it), then edits must never be saved
 BIG = ("0123456789" * 8 + "\n") * 700
 case("too big: never overwritten", BIG, ["key q", "key X"], BIG)
+# fonts: the same long line wraps at a different column per font (text width 544 px)
+LONG = "i" * 200 + "\n"
+def zpos(n): return "i" * n + "Z" + "i" * (200 - n) + "\n"
+case("font VGA wraps at 68 cols", LONG, ["btn 0x20", "key Z"], zpos(68))
+case("font Cream 10x16 wraps at 54 chars", LONG, ["btn 0x20", "key Z"], zpos(54), size="640x320 f1")
+case("font Cream proportional wraps at 136 narrow chars", LONG, ["btn 0x20", "key Z"], zpos(136), size="640x320 f2")
+bank = (HERE.parent / "fonts" / "fonts.bank").read_bytes()
+wi = bank[0x4200 + ord("i")]
+case("font Cream16 proportional wraps by glyph width", LONG, ["btn 0x20", "key Z"], zpos(544 // wi), size="640x320 f3")
+case("Ctrl+P cycles fonts", LONG, ["ctrl p", "btn 0x20", "key Z"], zpos(54))
+case("Ctrl+P x4 back to VGA", LONG, ["ctrl p", "ctrl p", "ctrl p", "ctrl p", "btn 0x20", "key Z"], zpos(68))
+case("cream: accents survive edit+save", "caf\u00e9 \u0153uvre \u00ab x \u00bb\n", ["btn 0x80", "key Z"], "cZaf\u00e9 \u0153uvre \u00ab x \u00bb\n", size="640x320 f1")
+case("cream: backspace removes whole char", "caf\u00e9\n", ["btn 0xc0", "key !", "bksp", "bksp"], "caf\u00e9\n", size="640x320 f1")
+# mouse (VGA 640x320: text starts at x=48, y=64, cells 8x16)
+DOC = "hello world\nsecond\n"
+case("mouse click places the cursor", DOC, ["mouse 89 70", "mdown", "mup", "key X"], "helloX world\nsecond\n")
+case("mouse click on 2nd line", DOC, ["mouse 49 83", "mdown", "mup", "key X"], "hello world\nXsecond\n")
+case("mouse drag selects", DOC, ["mouse 49 70", "mdown", "mouse 89 70", "mup", "ctrl x", "ctrl e", "ctrl v"], " worldhello\nsecond\n")
+case("mouse drag then type replaces", DOC, ["mouse 49 70", "mdown", "mouse 89 70", "mup", "key X"], "X world\nsecond\n")
+case("mouse middle click selects a word", DOC, ["mouse 113 70", "mmid", "ctrl c", "ctrl e", "ctrl v"], "hello worldworld\nsecond\n")
+case("mouse click past line end", DOC, ["mouse 300 70", "mdown", "mup", "key X"], "hello worldX\nsecond\n")
+case("mouse above text area clamps to first row", DOC, ["mouse 49 5", "mdown", "mup", "key X"], "Xhello world\nsecond\n")
+LINES = "".join("line%02d\n" % i for i in range(1, 60))
+case("mouse wheel scrolls (3 rows), click maps to the scrolled row", LINES, ["wheel -1", "mouse 49 70", "mdown", "mup", "key X"], LINES.replace("line04", "Xline04", 1))
+case("mouse click in Cream 10x16 (10 px cells)", DOC, ["mouse 99 70", "mdown", "mup", "key X"], "helloX world\nsecond\n", size="640x320 f1")
+case("mouse click in proportional font stays inside the line", DOC, ["mouse 400 70", "mdown", "mup", "key X"], "hello worldX\nsecond\n", size="640x320 f2")
 print("FAILED: " + ", ".join(failed) if failed else "ALL GFX REGRESSION TESTS PASSED")
 sys.exit(1 if failed else 0)

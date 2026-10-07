@@ -35,9 +35,11 @@
 | plus r/g/b NOMMES (0x08/0x0a/0x0c, confirmes dans
 | uxn/src/devices/screen.c:screen_palette -- la console les laisse en
 | padding anonyme puisqu'elle n'a pas de palette a configurer). )
+|02 @System/expansion $2
 |04 @System/wst $1 &rst $1 &metadata $2 &r $2 &g $2 &b $2 &debug $1 &state $1
 |20 @Screen &vector $2 &width $2 &height $2 &auto $1 &pad $1 &x $2 &y $2 &addr $2 &pixel $1 &sprite $1
 |80 @Controller &vector $2 &button $1 &key $1
+|90 @Mouse &vector $2 &x $2 &y $2 &state $1 &pad $3 &scrollx $2 &scrolly $2
 
 %x8  ( n* -- px* ) { #30 SFT2 }   ( n*8 : colonne caractere -> pixel, glyphe large de 8px )
 %x16 ( n* -- px* ) { #40 SFT2 }   ( n*16 : rangee caractere -> pixel, glyphe haut de 16px )
@@ -139,8 +141,25 @@
 @gfx-hp         $2  ( aide : pointeur de ligne )
 @gfx-hr         $2  ( aide : rangee )
 
-|4b40 @gfx-inp $24
-|4ba0 @gfx-rep $24  ( saisie : 1er octet = longueur, puis les octets )
+|4440 @gfx-inp $24
+|44d0 @gfx-pglyph $20
+|44f0 @gfx-prop $1
+|44f1 @gfx-pok $1
+|44f2 @gfx-fsel $1
+|44f5 @gfx-fmsg $1
+|44f3 @gfx-fbase $2
+|4500 @gfx-pw $100
+|4468 @gfx-mpx $2     ( pointeur : position )
+|446a @gfx-mpy $2
+|446c @gfx-mdn $1     ( 1 = bouton gauche enfonce )
+|446d @gfx-mvis $1    ( 1 = pointeur deja dessine )
+|446e @gfx-mrow $2    ( gfx-pos-at : rangee ecran visee )
+|4470 @gfx-mp $2      ( position courante )
+|4472 @gfx-mend $2    ( fin de la rangee )
+|4474 @gfx-macc $2    ( largeur cumulee en pixels )
+|4476 @gfx-mxx $2     ( x relatif au texte )
+|4478 @gfx-mw $2      ( largeur du caractere en pixels )
+|44a0 @gfx-rep $24  ( saisie : 1er octet = longueur, puis les octets )
 
 |0100
 
@@ -160,6 +179,7 @@
     #00 .gfx-booted STZ
     ;on-argv .Console/vector DEO2
     ;on-first-frame .Screen/vector DEO2
+    ;on-mouse .Mouse/vector DEO2
 BRK
 
 ( Appelee par core-boot (core.tal) une fois le fichier/.ini charges.
@@ -203,6 +223,11 @@ BRK
                 .gfx-h LDZ2 #0601 LTH2 #00 EQU ?&k4
                     .gfx-w LDZ2 #fff8 AND2 .Screen/width DEO2
                     .gfx-h LDZ2 #fff0 AND2 .Screen/height DEO2 &k4 &k3 &k2 &k1
+    gfx-font-init
+    ;gfx-pok LDA ?&hasbank ;msg-nobank say quit &hasbank
+    ;gfx-pok LDA #00 EQU ?&nocr
+    gfx-arg-font gfx-set-font
+    &nocr
     .Screen/width DEI2 x8-inv .wd-cols STZ2
     .Screen/height DEI2 x16-inv .wd-rows STZ2
     #0000 .Console/vector DEO2
@@ -295,6 +320,7 @@ BRK
                                         | tout appel a un rendu ne le
                                         | reclame pour autre chose. )
     .Controller/key DEI
+    DUP #00 EQU ?&nokey #00 ;gfx-fmsg STA &nokey
 
     ( key==0 : aucune frappe de texte/controle cette fois-ci, seul
     | l'etat des boutons (fleches/Home) nous interesse. )
@@ -323,6 +349,7 @@ BRK
     DUP #78 EQU #00 EQU ?&kx POP gfx-copy gfx-sel-eat after-edit BRK &kx   ( Ctrl+X : couper )
     DUP #76 EQU #00 EQU ?&kv POP gfx-sel-eat gfx-paste after-edit BRK &kv  ( Ctrl+V : coller )                ( Ctrl+Z : annuler )
     DUP #79 EQU #00 EQU ?&ky POP gfx-sel-clear redo after-edit BRK &ky                ( Ctrl+Y : retablir )
+    DUP #70 EQU #00 EQU ?&kfont POP gfx-toggle-font BRK &kfont             ( Ctrl+P : police )
     DUP #64 EQU #00 EQU ?&k13 POP gfx-toggle-theme BRK &k13           ( Ctrl+D : clair/sombre )  ( Ctrl+E : Fin, voir note en tete )
 
     &plain
@@ -408,6 +435,7 @@ JMP2r
 ( avant un deplacement : Maj ancre la selection, sinon on l'abandonne )
 @gfx-sel-pre ( -- )
     .wd-tmp1 LDZ #f8 AND #00 EQU ?&ret
+    #00 ;gfx-fmsg STA
     .wd-tmp1 LDZ #04 AND ?&shift
     gfx-sel-clear
     JMP2r
@@ -460,6 +488,275 @@ JMP2r
         ;clip .gfx-gi LDZ2 ADD2 LDA insert-byte
         .gfx-gi LDZ2 INC2 .gfx-gi STZ2
         !&l
+
+( ===== police proportionnelle (cream, la police de left) =====
+| Stockee dans la BANQUE d'expansion 1 (voir tools/append_bank.py) : octets
+| 0-255 = largeurs par code, puis 256 glyphes de 32 octets (4 tuiles 8x8 :
+| haut-gauche, bas-gauche, haut-droite, bas-droite). Un glyphe est copie
+| dans gfx-pglyph juste avant d'etre dessine ; les largeurs sont copiees
+| une fois pour toutes dans gfx-pw. Si la banque est absente (emulateur
+| sans expansion) gfx-pok reste a 0 et la police VGA reste utilisee. )
+@gfx-xw 01 0100 0001 0000 0000 =gfx-pw        ( cpyl : largeurs )
+@gfx-xg 01 0020 0001 0000 0000 =gfx-pglyph    ( cpyl : un glyphe, source a patcher )
+@gfx-xv 01 0010 0001 0000 0000 =gfx-pglyph    ( cpyl : un glyphe VGA de 16 octets )
+
+@gfx-font-init ( -- )
+    #00 ;gfx-pok STA
+    #01 gfx-set-font
+    ;gfx-pw #41 #00 SWP ADD2 LDA #00 EQU ?&no
+    #01 ;gfx-pok STA
+    &no
+    #00 gfx-set-font
+JMP2r
+
+( fsel -- : 0 = police VGA integree, 1 = Cream16x10 (banque, octet 0),
+| 2 = cream proportionnelle (banque, octet 0x2100) )
+@gfx-set-font
+    DUP ;gfx-fsel STA
+    DUP #00 EQU ?&vga
+    #01 ;gfx-prop STA
+    #01 SUB #00 SWP #2100 MUL2 ;gfx-fbase STA2
+    ;gfx-fbase LDA2 ;gfx-xw #0005 ADD2 STA2
+    ;gfx-xw .System/expansion DEO2
+    JMP2r
+    &vga
+    POP
+    #00 ;gfx-prop STA
+JMP2r
+
+( code -- : copie le glyphe dans gfx-pglyph )
+@gfx-fetch ( code -- )
+    #00 SWP #50 SFT2 #0100 ADD2 ;gfx-fbase LDA2 ADD2 ;gfx-xg #0005 ADD2 STA2
+    ;gfx-xg .System/expansion DEO2
+JMP2r
+
+( code color -- : dessine un caractere de la police proportionnelle ;
+| x avance de sa largeur, y est conserve )
+@gfx-pdraw
+    .gfx-tb STZ
+    DUP #20 LTH #00 EQU ?&ok POP #20 &ok
+    .gfx-ib STZ
+    .gfx-ib LDZ gfx-fetch
+    ;gfx-pglyph .Screen/addr DEO2
+    .gfx-tb LDZ .Screen/sprite DEOk DEO
+    .Screen/y DEI2 #0010 SUB2 .Screen/y DEO2
+    ( largeur au dela de 8 px : colonne de droite, en x+8 )
+    ;gfx-pw #00 .gfx-ib LDZ ADD2 LDA .gfx-ic STZ
+    .gfx-ic LDZ #09 LTH ?&narrow
+    .Screen/x DEI2 #0008 ADD2 .Screen/x DEO2
+    ;gfx-pglyph #0010 ADD2 .Screen/addr DEO2
+    .gfx-tb LDZ .Screen/sprite DEOk DEO
+    .Screen/y DEI2 #0010 SUB2 .Screen/y DEO2
+    .Screen/x DEI2 #0008 SUB2 .Screen/x DEO2
+    &narrow
+    .Screen/x DEI2 #00 .gfx-ic LDZ ADD2 .Screen/x DEO2
+JMP2r
+
+( code color -- : caractere du texte, selon la police choisie )
+@draw-doc-char
+    ;gfx-prop LDA ?&p
+    draw-char
+    JMP2r
+    &p
+    gfx-pdraw
+JMP2r
+
+( hooks de core.tal )
+@entry-layout ( -- )
+    ;gfx-prop LDA #00 EQU ?&mono
+    .wd-text-width LDZ2 #30 SFT2 .wd-text-width STZ2
+    &mono
+JMP2r
+
+( pos* -- : fixe wd-cwn (octets) et wd-cww (largeur) du caractere )
+@entry-cw
+    .wd-buflen LDZ2 .gfx-rowend STZ2
+    gfx-utf8-decode
+    .wd-cwn STZ POP
+    ;gfx-prop LDA ?&p
+    POP #01 .wd-cww STZ
+    JMP2r
+    &p
+    DUP #20 LTH #00 EQU ?&ok POP #20 &ok
+    #00 SWP ;gfx-pw ADD2 LDA .wd-cww STZ
+JMP2r
+
+( from* to* -- px* : largeur en pixels du texte entre deux positions, police proportionnelle )
+@gfx-pxwidth
+    .gfx-cend STZ2
+    .gfx-cp STZ2
+    #0000 .gfx-cn STZ2
+    &loop
+        .gfx-cp LDZ2 .gfx-cend LDZ2 LTH2 ?&body
+        .gfx-cn LDZ2 JMP2r
+        &body
+        .gfx-cp LDZ2 entry-cw
+        .gfx-cn LDZ2 #00 .wd-cww LDZ ADD2 .gfx-cn STZ2
+        .gfx-cp LDZ2 #00 .wd-cwn LDZ ADD2 .gfx-cp STZ2
+        !&loop
+
+( ===== souris =====
+| uxnemu masque le pointeur systeme : on dessine le notre sur la couche
+| AVANT de l'ecran (valeur de sprite 0x40 + couleur), qui ne touche donc
+| pas au texte de la couche arriere ; sprite 0x40 seul efface. Clic =
+| place le curseur, glisser = selection (ancre au clic), molette = defile.
+| Actif seulement en mode edition. )
+@gfx-ptr 80c0 e0f0 f8e0 1000
+
+@gfx-ptr-draw ( sprite -- )
+    #00 .Screen/auto DEO
+    ;gfx-mpx LDA2 .Screen/x DEO2
+    ;gfx-mpy LDA2 .Screen/y DEO2
+    ;gfx-ptr .Screen/addr DEO2
+    .Screen/sprite DEO
+    #06 .Screen/auto DEO
+JMP2r
+
+@on-mouse ( -> )
+    ;gfx-mvis LDA #00 EQU ?&noerase
+    #40 gfx-ptr-draw
+    &noerase
+    .Mouse/x DEI2 ;gfx-mpx STA2
+    .Mouse/y DEI2 ;gfx-mpy STA2
+    .gfx-mode LDZ ?&nobtn
+    gfx-mouse-buttons
+    &nobtn
+    #01 ;gfx-mvis STA
+    .Mouse/state DEI #01 AND ?&dn
+    #41 !&go
+    &dn
+    #42
+    &go
+    gfx-ptr-draw
+BRK
+
+@gfx-mouse-buttons ( -- )
+    .Mouse/scrolly DEI2 #0000 EQU2 ?&noscroll
+    .Mouse/scrolly DEI2 #8000 LTH2 ?&down
+    gfx-scroll-up gfx-scroll-up gfx-scroll-up
+    gfx-render
+    JMP2r
+    &down
+    gfx-scroll-down gfx-scroll-down gfx-scroll-down
+    gfx-render
+    JMP2r
+    &noscroll
+    .Mouse/state DEI #02 AND #00 EQU ?&nomid
+    ;gfx-mpx LDA2 ;gfx-mpy LDA2 gfx-pos-at gfx-select-word
+    #00 .Mouse/state DEO
+    gfx-render
+    JMP2r
+    &nomid
+    .Mouse/state DEI #01 AND ?&pressed
+    ;gfx-mdn LDA #00 EQU ?&ret
+    #00 ;gfx-mdn STA
+    .gfx-sel LDZ2 .wd-cursor LDZ2 EQU2 ?&clr
+    JMP2r
+    &clr
+    gfx-sel-clear
+    JMP2r
+    &pressed
+    #00 ;gfx-fmsg STA
+    ;gfx-mpx LDA2 ;gfx-mpy LDA2 gfx-pos-at
+    ;gfx-mdn LDA ?&drag
+    #01 ;gfx-mdn STA
+    DUP2 .gfx-sel STZ2
+    .wd-cursor STZ2
+    gfx-render
+    JMP2r
+    &drag
+    DUP2 .wd-cursor LDZ2 EQU2 ?&same
+    .wd-cursor STZ2
+    gfx-render
+    JMP2r
+    &same
+    POP2
+    &ret
+JMP2r
+
+( clic du milieu : selectionne le mot sous le pointeur, comme left )
+@gfx-select-word ( pos* -- )
+    DUP2 ;gfx-mp STA2
+    ;gfx-mend STA2
+    &l1
+        ;gfx-mp LDA2 #0000 EQU2 ?&e1
+        ;gfx-mp LDA2 #0001 SUB2 ;wd-buf ADD2 LDA #21 LTH ?&e1
+        ;gfx-mp LDA2 #0001 SUB2 ;gfx-mp STA2
+        !&l1
+    &e1
+    &l2
+        ;gfx-mend LDA2 .wd-buflen LDZ2 LTH2 #00 EQU ?&e2
+        ;gfx-mend LDA2 ;wd-buf ADD2 LDA #21 LTH ?&e2
+        ;gfx-mend LDA2 INC2 ;gfx-mend STA2
+        !&l2
+    &e2
+    ;gfx-mp LDA2 .gfx-sel STZ2
+    ;gfx-mend LDA2 .wd-cursor STZ2
+JMP2r
+
+@gfx-scroll-up ( -- )
+    .wd-scroll LDZ2 visual-row-before .wd-scroll STZ2
+JMP2r
+
+@gfx-scroll-down ( -- )
+    .wd-scroll LDZ2 .wd-text-width LDZ2 wrap-row-end
+    DUP2 .wd-buflen LDZ2 LTH2 ?&ok
+    POP2
+    JMP2r
+    &ok
+    wrap-next-start .wd-scroll STZ2
+JMP2r
+
+( x* y* -- pos* : position du tampon sous un point de l'ecran )
+@gfx-pos-at
+    #04 SFT2 ;gfx-mrow STA2
+    ;gfx-mxx STA2
+    ;gfx-mrow LDA2 .wd-text-top LDZ2 LTH2 ?&top
+    ;gfx-mrow LDA2 .wd-text-top LDZ2 SUB2 ;gfx-mrow STA2
+    !&clampd
+    &top
+    #0000 ;gfx-mrow STA2
+    &clampd
+    ;gfx-mrow LDA2 .wd-usable-rows LDZ2 LTH2 ?&inb
+    .wd-usable-rows LDZ2 #0001 SUB2 ;gfx-mrow STA2
+    &inb
+    .wd-scroll LDZ2 ;gfx-mp STA2
+    &rows
+        ;gfx-mrow LDA2 #0000 EQU2 ?&found
+        ;gfx-mp LDA2 .wd-text-width LDZ2 wrap-row-end ;gfx-mend STA2
+        ;gfx-mend LDA2 .wd-buflen LDZ2 LTH2 ?&adv
+        !&found
+        &adv
+        ;gfx-mend LDA2 wrap-next-start ;gfx-mp STA2
+        ;gfx-mrow LDA2 #0001 SUB2 ;gfx-mrow STA2
+        !&rows
+    &found
+    ;gfx-mp LDA2 .wd-text-width LDZ2 wrap-row-end ;gfx-mend STA2
+    ;gfx-mxx LDA2 .wd-eff-margin-cols LDZ2 x8 LTH2 ?&lz
+    ;gfx-mxx LDA2 .wd-eff-margin-cols LDZ2 x8 SUB2 ;gfx-mxx STA2
+    !&walk
+    &lz
+    #0000 ;gfx-mxx STA2
+    &walk
+    #0000 ;gfx-macc STA2
+    &wl
+        ;gfx-mp LDA2 ;gfx-mend LDA2 LTH2 ?&ch
+        !&done
+        &ch
+        ;gfx-mp LDA2 entry-cw
+        ;gfx-prop LDA ?&pw
+        #0008 ;gfx-mw STA2
+        !&wset
+        &pw
+        #00 .wd-cww LDZ ;gfx-mw STA2
+        &wset
+        ;gfx-mxx LDA2 ;gfx-macc LDA2 ;gfx-mw LDA2 #01 SFT2 ADD2 LTH2 ?&done
+        ;gfx-macc LDA2 ;gfx-mw LDA2 ADD2 ;gfx-macc STA2
+        ;gfx-mp LDA2 #00 .wd-cwn LDZ ADD2 ;gfx-mp STA2
+        !&wl
+    &done
+    ;gfx-mp LDA2
+JMP2r
 
 ( ===== modes saisie / aide / confirmation ===== )
 
@@ -936,6 +1233,7 @@ JMP2r
     "Ctrl+G 20 20 20 20 20 20 20 20 20 20 20 20 20 "Go 20 "to 20 "line 00
     "Ctrl+T 20 20 20 20 20 20 20 20 20 20 20 20 20 "Table 20 "of 20 "contents 20 "(Up/Down, 20 "Enter, 20 "Esc) 00
     "Ctrl+D 20 20 20 20 20 20 20 20 20 20 20 20 20 "Dark 20 "/ 20 "light 20 "theme 00
+    "Ctrl+P 20 20 20 20 20 20 20 20 20 20 20 20 20 "Font: 20 "VGA 20 "/ 20 "Cream 20 "10x16 20 "/ 20 "Cream 20 "prop 20 "(left) 20 "/ 20 "Cream16 20 "prop 00
     "Ctrl+H 20 20 20 20 20 20 20 20 20 20 20 20 20 "This 20 "help 00
     20 00
     "Arrows 20 20 20 20 20 20 20 20 20 20 20 20 20 "Move 20 20 20 "(Home: 20 "line 20 "start, 20 20 "Ctrl+E: 20 "line 20 "end) 00
@@ -961,6 +1259,21 @@ JMP2r
     #f00c .System/b DEO2
 JMP2r
 
+( -- str* : nom de la police courante )
+@gfx-font-name
+    ;font-names #00 ;gfx-fsel LDA #10 SFT2 ADD2 LDA2
+JMP2r
+
+@gfx-toggle-font ( -- )
+    ;gfx-pok LDA #00 EQU ?&no
+    ;gfx-fsel LDA INC DUP #04 LTH ?&ok POP #00 &ok gfx-set-font
+    #01 ;gfx-fmsg STA
+    .wd-scroll LDZ2 line-start .wd-scroll STZ2
+    clamp-scroll
+    gfx-render
+    &no
+JMP2r
+
 @gfx-toggle-theme ( -- )
     .gfx-dark LDZ #01 EOR .gfx-dark STZ
     gfx-apply-theme
@@ -968,11 +1281,32 @@ JMP2r
 JMP2r
 
 ( 1 si "light" figure dans le 2e argument, voir gfx-parse-size )
+( 2e argument : "f1".."f3" choisit la police de depart, 0 si absent )
+@gfx-arg-font ( -- fsel )
+    #01 .gfx-pi STZ
+    &loop
+        .gfx-pi LDZ ;wd-arg2 LDA LTH ?&body
+        #00 JMP2r
+        &body
+        ;wd-arg2 #00 .gfx-pi LDZ ADD2 LDA #66 EQU #00 EQU ?&next
+        ;wd-arg2 #00 .gfx-pi LDZ INC ADD2 LDA #30 SUB
+        DUP #04 LTH ?&ok POP #00 &ok
+        JMP2r
+        &next
+        .gfx-pi LDZ INC .gfx-pi STZ
+        !&loop
+
 @gfx-parse-light ( -- flag )
+    #6c
+!gfx-arg-has
+
+( ch -- flag : le caractere figure-t-il dans le 2e argument )
+@gfx-arg-has ( ch -- flag )
+    .gfx-ib STZ
     #01 .gfx-pi STZ
     &loop
         .gfx-pi LDZ ;wd-arg2 LDA GTH #00 EQU ?&k0 #00 JMP2r &k0
-        ;wd-arg2 #00 .gfx-pi LDZ ADD2 LDA #6c EQU #00 EQU ?&k1 #01 JMP2r &k1
+        ;wd-arg2 #00 .gfx-pi LDZ ADD2 LDA .gfx-ib LDZ EQU #00 EQU ?&k1 #01 JMP2r &k1
         .gfx-pi LDZ INC .gfx-pi STZ
         !&loop
 
@@ -1170,6 +1504,8 @@ JMP2r
     #0a .Console/error DEO
 JMP2r
 
+@msg-nobank "writhdeck-uxn: 20 "this 20 "emulator 20 "has 20 "no 20 "expansion 20 "memory 20 "(needed 20 "for 20 "the 20 "fonts) 00
+
 @quit-clean ( -- ) ;msg-q-clean say quit JMP2r
 @quit-discard ( -- ) ;msg-q-discard say quit JMP2r
 @quit-saved ( -- ) ;msg-q-saved say quit JMP2r
@@ -1183,19 +1519,22 @@ BRK
 
 ( --- police + dessin de texte ---
 | Police VGA 8x16 extraite de Uni2-VGA16.psf Linux : ASCII, Latin-1
-| complet et quelques signes typographiques, voir gfx-font tout en bas.
+| complet et quelques signes typographiques, stockee dans la BANQUE 1 comme
+| les autres polices (fonts/vga16.bin, voir tools/mkfont.py).
 | Les octets de controle 0x00-0x1f sont dessines comme un espace. )
 @draw-char ( char color -- )
     SWP
     DUP #20 LTH #00 EQU ?&k0 POP #20 &k0
-    [ #20 SUB #00 SWP #40 SFT2 ;gfx-font ADD2 ] .Screen/addr DEO2
+    #20 SUB #00 SWP #40 SFT2 #6300 ADD2 ;gfx-xv #0005 ADD2 STA2
+    ;gfx-xv .System/expansion DEO2
+    ;gfx-pglyph .Screen/addr DEO2
     .Screen/sprite DEOk DEO
     .Screen/y DEI2 #0010 SUB2 .Screen/y DEO2
     .Screen/x DEI2 #0008 ADD2 .Screen/x DEO2
 JMP2r
 
 ( --- UTF-8 vers glyphes ---
-| La police est la table gfx-font ci-dessous : VGA 8x16, un glyphe par
+| La police VGA 8x16 (banque 1, octet 0x6300) a un glyphe par
 | code de 0x20 a 0xff, le code etant un octet. 0x20-0x7e = ASCII,
 | 0xa0-0xff = Latin-1 identique a Unicode, 0x80-0x88 = extras :
 | 80 apostrophe typographique, 81 points de suspension, 82 tiret demi-
@@ -1385,6 +1724,9 @@ JMP2r
             | Screen comme le fait la console via clear-eol -- si on
             | sautait la marge gauche sans la dessiner, les pixels de la
             | frame precedente y resteraient). )
+            ( polices a bandes de largeur variable : les tuiles de 8 ou 16 px ne
+            | recouvrent pas toujours la fin de la rangee -- on l'efface d'abord )
+            ;gfx-prop LDA #00 EQU ?&nb .wd-text-top LDZ2 .gfx-row2 LDZ2 ADD2 gfx-blank-row &nb
             #0000 x8 .Screen/x DEO2
             .wd-text-top LDZ2 .gfx-row2 LDZ2 ADD2 x16 .Screen/y DEO2
             .wd-eff-margin-cols LDZ2 .gfx-color LDZ draw-spaces
@@ -1404,13 +1746,14 @@ JMP2r
                     #04 .gfx-ccol STZ
                     &nosel
                     .wd-tmp1 LDZ2 gfx-utf8-decode .gfx-consumed STZ2
-                    .gfx-ccol LDZ draw-char
+                    .gfx-ccol LDZ draw-doc-char
                     .wd-tmp1 LDZ2 .gfx-consumed LDZ2 ADD2 .wd-tmp1 STZ2
                     !&char-loop &k3
 
             ( remplissage = (wd-cols - eff-margin-cols) - contenu ecrit
             | (gfx-rowend - gfx-rowstart) -- couvre a la fois le reste de
             | wd-text-width ET la marge droite, jusqu'au bord ECRAN. )
+            .Screen/x DEI2 #0007 ADD2 #fff8 AND2 .Screen/x DEO2
             .wd-cols LDZ2 .Screen/x DEI2 #03 SFT2 SUB2 .gfx-pad STZ2
             .gfx-pad LDZ2 .gfx-color LDZ draw-spaces
 
@@ -1445,8 +1788,9 @@ JMP2r
     ;status-comma #01 draw-str
     .wd-cursor LDZ2 line-start .wd-cursor LDZ2 gfx-cells #0001 ADD2 #01 draw-dec
     .wd-dirty LDZ #00 NEQ #00 EQU ?&k4 ;status-dirty #01 draw-str &k4
+    ;gfx-fmsg LDA #00 EQU ?&nofm ;status-font #02 draw-str gfx-font-name #02 draw-str &nofm
     .wd-trunc LDZ #00 EQU ?&nt ;status-trunc #02 draw-str &nt
-    .wd-buflen LDZ2 #b200 LTH2 ?&nf ;status-full #02 draw-str &nf
+    .wd-buflen LDZ2 #b800 LTH2 ?&nf ;status-full #02 draw-str &nf
     ;status-sp #01 draw-str
     gfx-word-count #01 draw-dec
     ;status-words #01 draw-str
@@ -1458,9 +1802,16 @@ JMP2r
 @gfx-draw-cursor ( -- )
     .wd-cursor LDZ2 visual-row-start .wd-tmp1 STZ2
     .wd-scroll LDZ2 .wd-tmp1 LDZ2 count-visual-rows .wd-tmp2 STZ2
+    .wd-tmp1 LDZ2 .wd-scroll LDZ2 LTH2 ?&hide
+    .wd-tmp2 LDZ2 .wd-usable-rows LDZ2 LTH2 #00 EQU ?&hide
     .wd-tmp1 LDZ2 .wd-cursor LDZ2 gfx-cells .wd-tmp3 STZ2
 
+    ;gfx-prop LDA ?&px
     .wd-tmp3 LDZ2 .wd-eff-margin-cols LDZ2 ADD2 x8 .Screen/x DEO2
+    !&xok
+    &px
+    .wd-tmp1 LDZ2 .wd-cursor LDZ2 gfx-pxwidth .wd-eff-margin-cols LDZ2 x8 ADD2 .Screen/x DEO2
+    &xok
     .wd-tmp2 LDZ2 .wd-text-top LDZ2 ADD2 x16 .Screen/y DEO2
 
     .wd-cursor LDZ2 .wd-buflen LDZ2 LTH2 #00 EQU ?&k0 !&have-char &k0
@@ -1468,7 +1819,9 @@ JMP2r
     &have-char
     .wd-buflen LDZ2 .gfx-rowend STZ2
     gfx-cursor-bar
-    .wd-cursor LDZ2 gfx-utf8-decode POP2 #05 draw-char
+    .wd-cursor LDZ2 gfx-utf8-decode POP2 #05 draw-doc-char
+JMP2r
+    &hide
 JMP2r
 
 ( barre verticale de 2 pixels sur toute la hauteur de la cellule, a la
@@ -1486,6 +1839,12 @@ JMP2r
 @status-sep 20 "-- 20 00
 @status-comma 2c 00
 @status-sp 20 20 00
+@status-font 20 20 "Font: 20 00
+@font-names =fn0 =fn1 =fn2 =fn3
+@fn0 "VGA 20 "8x16 00
+@fn1 "Cream 20 "10x16 00
+@fn2 "Cream 20 "proportional 20 "(left) 00
+@fn3 "Cream 20 "10x16 20 "proportional 00
 @status-trunc 20 "[file 20 "too 20 "big, 20 "truncated: 20 "saving 20 "disabled] 00
 @status-full 20 "[buffer 20 "full] 00
 @status-words 20 "words 00
@@ -1498,230 +1857,6 @@ JMP2r
 ( Police terminus01x02, 8x16 par glyphe, ASCII imprimable 0x20-0x7d --
 | copiee telle quelle depuis uxn/projects/examples/gui/terminal.tal
 | (ecosysteme uxn de reference, domaine public). )
-@gfx-font
-    0000 0000 0000 0000 0000 0000 0000 0000
-    0000 183c 3c3c 1818 1800 1818 0000 0000
-    0066 6666 2400 0000 0000 0000 0000 0000
-    0000 006c 6cfe 6c6c 6cfe 6c6c 0000 0000
-    1818 7cc6 c2c0 7c06 0686 c67c 1818 0000
-    0000 0000 c2c6 0c18 3060 c686 0000 0000
-    0000 386c 6c38 76dc cccc cc76 0000 0000
-    0030 3030 2000 0000 0000 0000 0000 0000
-    0000 0c18 3030 3030 3030 180c 0000 0000
-    0000 3018 0c0c 0c0c 0c0c 1830 0000 0000
-    0000 0000 0066 3cff 3c66 0000 0000 0000
-    0000 0000 0018 187e 1818 0000 0000 0000
-    0000 0000 0000 0000 0018 1818 3000 0000
-    0000 0000 0000 00fe 0000 0000 0000 0000
-    0000 0000 0000 0000 0000 1818 0000 0000
-    0000 0000 0206 0c18 3060 c080 0000 0000
-    0000 386c c6c6 d6d6 c6c6 6c38 0000 0000
-    0000 1838 7818 1818 1818 187e 0000 0000
-    0000 7cc6 060c 1830 60c0 c6fe 0000 0000
-    0000 7cc6 0606 3c06 0606 c67c 0000 0000
-    0000 0c1c 3c6c ccfe 0c0c 0c1e 0000 0000
-    0000 fec0 c0c0 fc06 0606 c67c 0000 0000
-    0000 3860 c0c0 fcc6 c6c6 c67c 0000 0000
-    0000 fec6 0606 0c18 3030 3030 0000 0000
-    0000 7cc6 c6c6 7cc6 c6c6 c67c 0000 0000
-    0000 7cc6 c6c6 7e06 0606 0c78 0000 0000
-    0000 0000 1818 0000 0018 1800 0000 0000
-    0000 0000 1818 0000 0018 1830 0000 0000
-    0000 0006 0c18 3060 3018 0c06 0000 0000
-    0000 0000 007e 0000 7e00 0000 0000 0000
-    0000 0060 3018 0c06 0c18 3060 0000 0000
-    0000 7cc6 c60c 1818 1800 1818 0000 0000
-    0000 007c c6c6 dede dedc c07c 0000 0000
-    0000 1038 6cc6 c6fe c6c6 c6c6 0000 0000
-    0000 fc66 6666 7c66 6666 66fc 0000 0000
-    0000 3c66 c2c0 c0c0 c0c2 663c 0000 0000
-    0000 f86c 6666 6666 6666 6cf8 0000 0000
-    0000 fe66 6268 7868 6062 66fe 0000 0000
-    0000 fe66 6268 7868 6060 60f0 0000 0000
-    0000 3c66 c2c0 c0de c6c6 663a 0000 0000
-    0000 c6c6 c6c6 fec6 c6c6 c6c6 0000 0000
-    0000 3c18 1818 1818 1818 183c 0000 0000
-    0000 1e0c 0c0c 0c0c cccc cc78 0000 0000
-    0000 e666 666c 7878 6c66 66e6 0000 0000
-    0000 f060 6060 6060 6062 66fe 0000 0000
-    0000 c6ee fefe d6c6 c6c6 c6c6 0000 0000
-    0000 c6e6 f6fe dece c6c6 c6c6 0000 0000
-    0000 7cc6 c6c6 c6c6 c6c6 c67c 0000 0000
-    0000 fc66 6666 7c60 6060 60f0 0000 0000
-    0000 7cc6 c6c6 c6c6 c6d6 de7c 0c0e 0000
-    0000 fc66 6666 7c6c 6666 66e6 0000 0000
-    0000 7cc6 c660 380c 06c6 c67c 0000 0000
-    0000 7e7e 5a18 1818 1818 183c 0000 0000
-    0000 c6c6 c6c6 c6c6 c6c6 c67c 0000 0000
-    0000 c6c6 c6c6 c6c6 c66c 3810 0000 0000
-    0000 c6c6 c6c6 d6d6 d6fe ee6c 0000 0000
-    0000 c6c6 6c7c 3838 7c6c c6c6 0000 0000
-    0000 6666 6666 3c18 1818 183c 0000 0000
-    0000 fec6 860c 1830 60c2 c6fe 0000 0000
-    0000 3c30 3030 3030 3030 303c 0000 0000
-    0000 0080 c0e0 7038 1c0e 0602 0000 0000
-    0000 3c0c 0c0c 0c0c 0c0c 0c3c 0000 0000
-    1038 6cc6 0000 0000 0000 0000 0000 0000
-    0000 0000 0000 0000 0000 0000 00ff 0000
-    3030 1800 0000 0000 0000 0000 0000 0000
-    0000 0000 0078 0c7c cccc cc76 0000 0000
-    0000 e060 6078 6c66 6666 667c 0000 0000
-    0000 0000 007c c6c0 c0c0 c67c 0000 0000
-    0000 1c0c 0c3c 6ccc cccc cc76 0000 0000
-    0000 0000 007c c6fe c0c0 c67c 0000 0000
-    0000 386c 6460 f060 6060 60f0 0000 0000
-    0000 0000 0076 cccc cccc cc7c 0ccc 7800
-    0000 e060 606c 7666 6666 66e6 0000 0000
-    0000 1818 0038 1818 1818 183c 0000 0000
-    0000 0606 000e 0606 0606 0606 6666 3c00
-    0000 e060 6066 6c78 786c 66e6 0000 0000
-    0000 3818 1818 1818 1818 183c 0000 0000
-    0000 0000 00ec fed6 d6d6 d6c6 0000 0000
-    0000 0000 00dc 6666 6666 6666 0000 0000
-    0000 0000 007c c6c6 c6c6 c67c 0000 0000
-    0000 0000 00dc 6666 6666 667c 6060 f000
-    0000 0000 0076 cccc cccc cc7c 0c0c 1e00
-    0000 0000 00dc 7666 6060 60f0 0000 0000
-    0000 0000 007c c660 380c c67c 0000 0000
-    0000 1030 30fc 3030 3030 361c 0000 0000
-    0000 0000 00cc cccc cccc cc76 0000 0000
-    0000 0000 0066 6666 6666 3c18 0000 0000
-    0000 0000 00c6 c6d6 d6d6 fe6c 0000 0000
-    0000 0000 00c6 6c38 3838 6cc6 0000 0000
-    0000 0000 00c6 c6c6 c6c6 c67e 060c f800
-    0000 0000 00fe cc18 3060 c6fe 0000 0000
-    0000 0e18 1818 7018 1818 180e 0000 0000
-    0000 1818 1818 1818 1818 1818 0000 0000
-    0000 7018 1818 0e18 1818 1870 0000 0000
-    0000 76dc 0000 0000 0000 0000 0000 0000
-    0000 0000 0000 0000 0000 0000 0000 0000
-    0018 1818 3000 0000 0000 0000 0000 0000
-    0000 0000 0000 0000 0000 dbdb 0000 0000
-    0000 0000 0000 00fe 0000 0000 0000 0000
-    0000 0000 0000 00ff 0000 0000 0000 0000
-    0066 cccc cc00 0000 0000 0000 0000 0000
-    0066 6666 cc00 0000 0000 0000 0000 0000
-    0000 0000 006c d6d6 ded8 d86e 0000 0000
-    0000 6ed8 d8d8 ded8 d8d8 d86e 0000 0000
-    0000 1c36 60fc 60f8 6060 361c 0000 0000
-    0000 0000 0000 0000 0000 0000 0000 0000
-    0000 0000 0000 0000 0000 0000 0000 0000
-    0000 0000 0000 0000 0000 0000 0000 0000
-    0000 0000 0000 0000 0000 0000 0000 0000
-    0000 0000 0000 0000 0000 0000 0000 0000
-    0000 0000 0000 0000 0000 0000 0000 0000
-    0000 0000 0000 0000 0000 0000 0000 0000
-    0000 0000 0000 0000 0000 0000 0000 0000
-    0000 0000 0000 0000 0000 0000 0000 0000
-    0000 0000 0000 0000 0000 0000 0000 0000
-    0000 0000 0000 0000 0000 0000 0000 0000
-    0000 0000 0000 0000 0000 0000 0000 0000
-    0000 0000 0000 0000 0000 0000 0000 0000
-    0000 0000 0000 0000 0000 0000 0000 0000
-    0000 0000 0000 0000 0000 0000 0000 0000
-    0000 0000 0000 0000 0000 0000 0000 0000
-    0000 0000 0000 0000 0000 0000 0000 0000
-    0000 0000 0000 0000 0000 0000 0000 0000
-    0000 0000 0000 0000 0000 0000 0000 0000
-    0000 0000 0000 0000 0000 0000 0000 0000
-    0000 0000 0000 0000 0000 0000 0000 0000
-    0000 0000 0000 0000 0000 0000 0000 0000
-    0000 0000 0000 0000 0000 0000 0000 0000
-    0000 0000 0000 0000 0000 0000 0000 0000
-    0000 1818 0018 1818 3c3c 3c18 0000 0000
-    0018 183c 6660 6060 663c 1818 0000 0000
-    0038 6c64 60f0 6060 6060 e6fc 0000 0000
-    0000 0000 663c 6666 663c 6600 0000 0000
-    0000 6666 3c18 7e18 7e18 1818 0000 0000
-    0000 1818 1818 0018 1818 1818 0000 0000
-    007c c660 386c c6c6 6c38 0cc6 7c00 0000
-    0000 6c6c 0000 0000 0000 0000 0000 0000
-    0000 3c42 99a5 a1a1 a599 423c 0000 0000
-    003c 6c6c 3e00 7e00 0000 0000 0000 0000
-    0000 0000 0036 6cd8 6c36 0000 0000 0000
-    0000 0000 0000 fe06 0606 0600 0000 0000
-    0000 0000 0000 00fe 0000 0000 0000 0000
-    0000 3844 bab2 aa44 3800 0000 0000 0000
-    0000 007c 0000 0000 0000 0000 0000 0000
-    0038 6c6c 3800 0000 0000 0000 0000 0000
-    0000 0000 1818 7e18 1800 7e00 0000 0000
-    0070 d830 60c8 f800 0000 0000 0000 0000
-    0070 d830 18d8 7000 0000 0000 0000 0000
-    0000 0c18 0000 0000 0000 0000 0000 0000
-    0000 0000 00cc cccc cccc ccf6 c0c0 c000
-    0000 7fdb dbdb 7b1b 1b1b 1b1b 0000 0000
-    0000 0000 0000 0000 1800 0000 0000 0000
-    0000 0000 0000 0000 0000 0000 180c 3800
-    0030 7030 3030 7800 0000 0000 0000 0000
-    0038 6c6c 3800 7c00 0000 0000 0000 0000
-    0000 0000 00d8 6c36 6cd8 0000 0000 0000
-    00c0 c0c2 c6cc 1830 66ce 9e3e 0606 0000
-    00c0 c0c2 c6cc 1830 60dc 860c 183e 0000
-    00e0 3062 36ec 1830 66ce 9e3e 0606 0000
-    0000 3030 0030 3060 c0c6 c67c 0000 0000
-    6030 0010 386c c6c6 fec6 c6c6 0000 0000
-    0c18 0010 386c c6c6 fec6 c6c6 0000 0000
-    1038 6c10 386c c6c6 fec6 c6c6 0000 0000
-    76dc 0010 386c c6c6 fec6 c6c6 0000 0000
-    6c6c 0010 386c c6c6 fec6 c6c6 0000 0000
-    386c 3810 386c c6c6 fec6 c6c6 0000 0000
-    0000 3e6c cccc fecc cccc ccce 0000 0000
-    0000 3c66 c2c0 c0c0 c0c2 663c 180c 3800
-    3018 00fe 6662 6878 6862 66fe 0000 0000
-    0c18 00fe 6662 6878 6862 66fe 0000 0000
-    1038 44fe 6662 6878 6862 66fe 0000 0000
-    6c6c 00fe 6662 6878 6862 66fe 0000 0000
-    3018 003c 1818 1818 1818 183c 0000 0000
-    0c18 003c 1818 1818 1818 183c 0000 0000
-    183c 423c 1818 1818 1818 183c 0000 0000
-    6666 003c 1818 1818 1818 183c 0000 0000
-    0000 f86c 6666 f666 6666 6cf8 0000 0000
-    76dc 00c6 e6f6 fede cec6 c6c6 0000 0000
-    6030 007c c6c6 c6c6 c6c6 c67c 0000 0000
-    0c18 007c c6c6 c6c6 c6c6 c67c 0000 0000
-    1038 447c c6c6 c6c6 c6c6 c67c 0000 0000
-    76dc 007c c6c6 c6c6 c6c6 c67c 0000 0000
-    6c6c 007c c6c6 c6c6 c6c6 c67c 0000 0000
-    0000 0000 0066 3c18 3c66 0000 0000 0000
-    0000 7ac4 cece d6d6 e6e6 46bc 0000 0000
-    6030 00c6 c6c6 c6c6 c6c6 c67c 0000 0000
-    0c18 00c6 c6c6 c6c6 c6c6 c67c 0000 0000
-    1038 44c6 c6c6 c6c6 c6c6 c67c 0000 0000
-    6c6c 00c6 c6c6 c6c6 c6c6 c67c 0000 0000
-    0c18 0066 6666 3c18 1818 183c 0000 0000
-    0000 f060 7c66 6666 667c 60f0 0000 0000
-    0000 3c66 6666 6c66 6666 66ec 0000 0000
-    0000 6030 0078 0c7c cccc cc76 0000 0000
-    0000 1830 0078 0c7c cccc cc76 0000 0000
-    0010 386c 0078 0c7c cccc cc76 0000 0000
-    0000 76dc 0078 0c7c cccc cc76 0000 0000
-    0000 6c6c 0078 0c7c cccc cc76 0000 0000
-    0038 6c38 0078 0c7c cccc cc76 0000 0000
-    0000 0000 00cc 7636 7ed8 d86e 0000 0000
-    0000 0000 007c c6c0 c0c0 c67c 180c 3800
-    0000 6030 007c c6fe c0c0 c67c 0000 0000
-    0000 0c18 007c c6fe c0c0 c67c 0000 0000
-    0010 386c 007c c6fe c0c0 c67c 0000 0000
-    0000 6c6c 007c c6fe c0c0 c67c 0000 0000
-    0000 3018 0038 1818 1818 183c 0000 0000
-    0000 0c18 0038 1818 1818 183c 0000 0000
-    0010 386c 0038 1818 1818 183c 0000 0000
-    0000 6666 0038 1818 1818 183c 0000 0000
-    0000 761c 3c06 7ec6 c6c6 c67c 0000 0000
-    0000 76dc 00dc 6666 6666 6666 0000 0000
-    0000 6030 007c c6c6 c6c6 c67c 0000 0000
-    0000 0c18 007c c6c6 c6c6 c67c 0000 0000
-    0010 386c 007c c6c6 c6c6 c67c 0000 0000
-    0000 76dc 007c c6c6 c6c6 c67c 0000 0000
-    0000 6c6c 007c c6c6 c6c6 c67c 0000 0000
-    0000 0000 1818 007e 0018 1800 0000 0000
-    0000 0000 007a c4ce d6e6 46bc 0000 0000
-    0000 6030 00cc cccc cccc cc76 0000 0000
-    0000 1830 00cc cccc cccc cc76 0000 0000
-    0010 386c 00cc cccc cccc cc76 0000 0000
-    0000 cccc 00cc cccc cccc cc76 0000 0000
-    0000 0c18 00c6 c6c6 c6c6 c67e 060c f800
-    0000 e060 607c 6666 6666 667c 6060 f000
-    0000 6c6c 00c6 c6c6 c6c6 c67e 060c f800
+@gfx-end
 
 ~src/core.tal

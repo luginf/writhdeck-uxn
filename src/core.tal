@@ -146,6 +146,10 @@
                     | ce meme balayage )
 
 ( --- annuler / retablir : variables --- )
+|00bc
+@wd-cwn      $1  ( entry-cw : octets du caractere )
+@wd-cww      $1  ( entry-cw : largeur du caractere, en unites de wd-text-width )
+
 |00bf
 @wd-trunc    $1  ( 1 = le fichier etait plus gros que le tampon : il a ete TRONQUE, la sauvegarde est donc desactivee )
 
@@ -170,7 +174,7 @@
 @wd-mr      $2  ( mark-prime : debut de ligne )
 @wd-mk      $2  ( mark-prime : position de parcours )
 
-|3000
+|2900
 
 ( --- phase 1 : capture du premier argument (chemin de fichier) ---
 | Console/type : STD=1 (frappe normale -- signifie ICI qu'aucun
@@ -238,13 +242,13 @@ JMP2r
 @load-file ( -- )
     #00 .wd-trunc STZ
     ;wd-fname .File/name DEO2
-    #b200 .File/length DEO2
+    #b800 .File/length DEO2
     ;wd-buf .File/read DEO2
     .File/success DEI2 .wd-buflen STZ2
     ( tampon rempli a ras bord : y a-t-il encore des octets dans le
     | fichier ? Lecture d'UN octet de plus (le device File continue
     | la ou il s'est arrete) dans clip, qui sert de scratch ici. )
-    .wd-buflen LDZ2 #b200 LTH2 ?&ok
+    .wd-buflen LDZ2 #b800 LTH2 ?&ok
     #0001 .File/length DEO2
     ;clip .File/read DEO2
     .File/success DEI2 #0000 EQU2 ?&ok
@@ -296,7 +300,7 @@ JMP2r
 
 @insert-byte ( byte -- )
     ( tampon plein : ignore l'octet plutot que de deborder en page 0 )
-    .wd-buflen LDZ2 #b200 LTH2 ?{ POP JMP2r }
+    .wd-buflen LDZ2 #b800 LTH2 ?{ POP JMP2r }
     DUP .wd-ub STZ
     .wd-cursor LDZ2 .wd-up STZ2
     #01 .wd-ut STZ
@@ -611,33 +615,45 @@ JMP2r
 | avant lui (l'espace lui-meme exclu) ; si aucun espace, coupe pile a
 | pos+width (milieu de mot). wd-tmp22..26 = scratch prive. )
 @wrap-row-end ( pos* width* -- end* )
+    ( Coupe glouton, caractere par caractere : entry-cw (definie par chaque
+    | entree) donne pour le caractere en wd-tmp21 son nombre d'octets
+    | (wd-cwn) et sa largeur (wd-cww) -- 1 colonne pour la console et la
+    | police a chasse fixe, des pixels pour la police proportionnelle,
+    | wd-text-width etant dans la meme unite. Les octets de continuation
+    | UTF-8 ne comptent donc plus comme des colonnes. Regle de coupure
+    | inchangee : au dernier espace strictement apres pos si possible,
+    | sinon au milieu du mot, toujours au moins un caractere par rangee.
+    | wd-tmp21 = position courante, 22 = largeur, 23 = fin de ligne,
+    | 24 = largeur accumulee, 25 = pos, 26 = dernier espace (ffff = aucun). )
     .wd-tmp22 STZ2
     .wd-tmp25 STZ2
-
     .wd-tmp25 LDZ2 line-end .wd-tmp23 STZ2
-
-    ( reste(=line_end-pos) <= width : toute la fin de ligne tient --
-    | fin = line_end. GTH2 brut SANS inversion : le bloc doit
-    | s'executer sur le FAUX de "reste>width" (donc <=) -- meme
-    | exception documentee que le test "est un chiffre" de
-    | parse-ini-value (voir CLAUDE.md). )
-    .wd-tmp23 LDZ2 .wd-tmp25 LDZ2 SUB2 .wd-tmp22 LDZ2 GTH2 ?{
-        .wd-tmp23 LDZ2 JMP2r }
-
-    ( ne tient pas : candidat = pos + width )
-    .wd-tmp25 LDZ2 .wd-tmp22 LDZ2 ADD2 .wd-tmp24 STZ2
-
-    ( recherche en arriere depuis (candidat-1) jusqu'a pos EXCLU, pour
-    | le dernier espace -- meme borne que la boucle C "p > start". )
-    .wd-tmp24 LDZ2 #0001 SUB2 .wd-tmp26 STZ2
-    &search
-        .wd-tmp26 LDZ2 .wd-tmp25 LDZ2 GTH2 #00 EQU ?{
-            ;wd-buf .wd-tmp26 LDZ2 ADD2 LDA #20 EQU #00 EQU ?{ !&found }
-            .wd-tmp26 LDZ2 #0001 SUB2 .wd-tmp26 STZ2
-            !&search }
-    .wd-tmp24 LDZ2 JMP2r
-    &found
-    .wd-tmp26 LDZ2
+    #0000 .wd-tmp24 STZ2
+    #ffff .wd-tmp26 STZ2
+    .wd-tmp25 LDZ2 .wd-tmp21 STZ2
+    &loop
+        .wd-tmp21 LDZ2 .wd-tmp23 LDZ2 LTH2 ?&go
+        .wd-tmp23 LDZ2 JMP2r
+        &go
+        .wd-tmp21 LDZ2 entry-cw
+        .wd-tmp24 LDZ2 #00 .wd-cww LDZ ADD2 .wd-tmp22 LDZ2 GTH2 ?&over
+        ( le caractere tient : un espace strictement apres pos devient le
+        | dernier point de coupure possible )
+        .wd-tmp21 LDZ2 .wd-tmp25 LDZ2 GTH2 #00 EQU ?&nosp
+        .wd-tmp21 LDZ2 ;wd-buf ADD2 LDA #20 EQU #00 EQU ?&nosp
+        .wd-tmp21 LDZ2 .wd-tmp26 STZ2
+        &nosp
+        .wd-tmp24 LDZ2 #00 .wd-cww LDZ ADD2 .wd-tmp24 STZ2
+        .wd-tmp21 LDZ2 #00 .wd-cwn LDZ ADD2 .wd-tmp21 STZ2
+        !&loop
+        &over
+        .wd-tmp26 LDZ2 #ffff EQU2 ?&hard
+        .wd-tmp26 LDZ2 JMP2r
+        &hard
+        .wd-tmp21 LDZ2 .wd-tmp25 LDZ2 EQU2 ?&one
+        .wd-tmp21 LDZ2 JMP2r
+        &one
+        .wd-tmp21 LDZ2 #00 .wd-cwn LDZ ADD2
 JMP2r
 
 ( ( end* -- next* ) : debut de la PROCHAINE rangee visuelle apres une
@@ -1069,6 +1085,7 @@ JMP2r
     .wd-rows LDZ2 #0001 SUB2 .wd-tmp19 STZ2
     &rows-ok
     .wd-tmp19 LDZ2 .wd-text-top LDZ2 SUB2 .wd-usable-rows STZ2
+    entry-layout
 JMP2r
 
 ( wd-scroll est le debut OCTET d'une RANGEE VISUELLE, pas forcement
@@ -1101,14 +1118,14 @@ JMP2r
 @ini-key-margin-cols "margin_cols 00
 @ini-key-margin-rows "margin_rows 00
 
-( CARTE MEMOIRE : code propre a l'entree |0100-, code partage |3000-
+( CARTE MEMOIRE : code propre a l'entree |0100-, code partage |2900-
 | (environ 0xf00 octets), puis les donnees ci-dessous. `make layout`
 | verifie que le code ne deborde ni sur |3000 (entree graphique) ni sur
 | |4000 (partage) : uxnasm ne signale PAS un chevauchement (piege #13).
-| wd-buf = 0xb200 octets (~45 Ko), jusqu'a |ff00. )
-|4000 @ulog $480
-|4480 @rlog $480
-|4900 @clip $200
-|4b00 @wd-arg2 $20
-|4c00 @wd-fname $100
-|4d00 @wd-buf $b200
+| wd-buf = 0xb800 octets (~46 Ko), jusqu'a |ff00. )
+|3900 @ulog $480
+|3d80 @rlog $480
+|4200 @clip $200
+|4400 @wd-arg2 $20
+|4600 @wd-fname $100
+|4700 @wd-buf $b800

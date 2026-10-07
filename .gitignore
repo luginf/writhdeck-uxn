@@ -2,3 +2,7 @@ bin/
 *.rom
 *.rom.sym
 tests/work/
+__pycache__/
+fonts/fonts.bank
+fonts/cream-latin1.uf2
+dist/

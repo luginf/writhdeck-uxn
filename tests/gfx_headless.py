@@ -10,6 +10,7 @@ script : une commande par ligne
   ctrl X          Ctrl+X (bit Ctrl du bouton + lettre en clair)
   btn N           appui+relache d'un bouton (0x10 haut 0x20 bas 0x40 gauche 0x80 droite 0x08 home)
   enter / bksp / esc / del   Entree, Retour arriere, Echap, Suppr
+  mouse X Y / mdown / mup / mmid (middle click) / wheel N   pointer position, left button, wheel (N>0 = up)
   shot out.png    capture
 Les sources uxn2.c sont lues dans $UXN2_SRC (defaut /temp/github/uxn-all/
 implementations/uxn2/uxn2.c). Le bug amont emu_deo(Uint8 addr) qui tronque
@@ -41,6 +42,11 @@ static void hl_run(const char *script){
 		else if(!strncmp(l, "bksp", 4)) controller_key(0x08);
 		else if(!strncmp(l, "esc", 3)) controller_key(0x1b);
 		else if(!strncmp(l, "del", 3)) controller_key(0x7f);
+		else if(!strncmp(l, "mouse ", 6)) { int x, y; sscanf(l + 6, "%d %d", &x, &y); mouse_pos(x, y); }
+		else if(!strncmp(l, "mdown", 5)) mouse_down(1);
+		else if(!strncmp(l, "mmid", 4)) { mouse_down(2); mouse_up(2); }
+		else if(!strncmp(l, "mup", 3)) mouse_up(1);
+		else if(!strncmp(l, "wheel ", 6)) mouse_scroll(0, (int)strtol(l + 6, NULL, 0));
 		else if(!strncmp(l, "shot ", 5)) { screen_update(); hl_shot(l + 5); }
 		if(dev[0x0f]) break;
 	}

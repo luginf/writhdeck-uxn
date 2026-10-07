@@ -12,7 +12,8 @@ for name, (data_label, _) in LIMITS.items():
     while i < len(d):
         a = int.from_bytes(d[i:i+2], "big"); j = d.index(b"\0", i + 2)
         labels[d[i+2:j].decode()] = a; i = j + 1
-    end = 0x100 + rom.stat().st_size
+    sizef = rom.with_suffix(rom.suffix + '.size')
+    end = 0x100 + (int(sizef.read_text()) if sizef.exists() else rom.stat().st_size)
     core = labels["on-argv"]
     first_gfx_data = labels[data_label]
     entry_end_ok = True
@@ -26,4 +27,10 @@ for name, (data_label, _) in LIMITS.items():
     last_entry = max(a for n, a in labels.items() if a < core and a >= 0x100)
     if last_entry >= core:
         print("  ERREUR : l'entree deborde sur core"); ok = False
+# the docs must stay openable by our own roms (buffer = 0xa900 bytes, bigger files are truncated)
+LIMIT = 0xA900
+for f in [R.parent / "CLAUDE.md", R.parent / "README.md", *sorted((R.parent / "docs").glob("*.md"))]:
+    n = f.stat().st_size
+    if n > LIMIT - 2000:
+        print(f"  ATTENTION : {f.name} fait {n} octets (limite du tampon {LIMIT}) : le decouper"); ok = ok and n <= LIMIT
 sys.exit(0 if ok else 1)

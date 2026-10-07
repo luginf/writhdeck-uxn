@@ -8,14 +8,185 @@ console/graphique" plus bas) :
   terminal, ANSI/VT100) — le portage original, testé automatiquement
   (`tests/`, pty).
 - `src/writhdeck-gfx.tal` → `bin/writhdeck-gfx.rom`, device
-  **Screen+Controller** (mode graphique, `uxnemu`) — ajouté ensuite,
-  **jamais vérifié visuellement** (voir piège #17).
+  **Screen+Controller+Mouse** (mode graphique, `uxnemu`) — ajouté
+  ensuite ; testé sans fenêtre (captures PNG, `tests/gfx_*`) et avec le
+  vrai `uxnemu` par injection d'événements SDL.
 
 Voir `README.md` pour le périmètre exact (touches supportées, limites
 connues, instructions de build). Ce fichier documente les pièges
 rencontrés en construisant ce portage et les conventions à connaître
 avant d'y toucher, notamment pour reprendre le travail depuis une
 autre machine.
+
+> Ce fichier est volontairement court (il doit rester ouvrable en entier
+> par nos propres ROM : le tampon d'édition fait 47 104 octets, au-delà un
+> fichier est tronqué et la sauvegarde est refusée). Le détail est dans :
+> - @docs/PIEGES.md : pièges Uxntal et méthodes de debug (#1 à #16) et le bug `min2`
+> - @docs/ARCHITECTURE.md : architecture console/graphique et pièges #17 à #21
+> Garder CHAQUE fichier de documentation sous ~40 000 octets (`make test` le vérifie).
+
+## État du projet (octobre 2026) — LIRE EN PREMIER
+
+### Livrables et commandes
+- `make rom` → `bin/writhdeck.rom` (console, ~17 Ko) ; `make rom-gfx` →
+  `bin/writhdeck-gfx.rom` (graphique) ; `make test` = tests console pty +
+  `tests/check_layout.py` (aucun chevauchement code/données) + suite
+  graphique ; `make layout` seul pour la carte mémoire.
+- Lanceur unique `./writhdeck-uxn` (sans argument : aide en anglais) :
+  `-c/-g` (console/graphique), `-n` brouillon, `-s LxH`, `-z 1|2|3`,
+  `-l` clair, `-f vga|cream|prop|creamprop`. Il se place dans le
+  répertoire du fichier (sandbox du device File), reconstruit le ROM si une
+  source/police/outil est plus récent, met le tty en raw pour la console.
+  Emulateur graphique par défaut `uxnemu` (jamais `uxn2`, voir pièges).
+- Le ROM graphique fait 0xff00 octets de code PUIS la banque de polices
+  (`tools/append_bank.py`) : ~94 Ko au total, chargé par uxncli/uxnemu/uxn2.
+
+### Fonctions (graphique ; la console a : édition, flèches, Ctrl+S/Q, Ctrl+Z/Y, titres/commentaires/marques colorés, retour à la ligne, confirmation de sortie)
+Ctrl+S sauver ; Ctrl+Q quitter (confirmation si modifié, trace sur stderr) ;
+Ctrl+Z/Y annuler/rétablir ; Ctrl+F recherche ; Ctrl+R remplacer (y/n/a) ;
+Ctrl+G ligne ; Ctrl+T table des matières ; Ctrl+D clair/sombre ; Ctrl+P
+police (nom affiché dans la barre) ; Ctrl+H aide ; Ctrl+A/C/X/V sélection
+et presse-papiers interne (512 o) ; Maj+flèches (Maj GAUCHE seulement) ;
+Ctrl+Haut/Bas pages ; Ctrl+Début ; Suppr ; souris (voir plus bas) ;
+compteur de mots ; UTF-8 : déplacements/effacements par caractère.
+La console n'a PAS (à porter si besoin) : recherche, remplacement, aller à
+la ligne, sélection, souris, TOC, thème, aide.
+
+### Architecture
+`src/core.tal` (partagé) = tampon plat + édition + curseur + retour à la
+ligne + .ini + titres/commentaires/marques + annuler/rétablir + chargement
+/sauvegarde. Hooks définis par CHAQUE entrée : `entry-finish-boot`,
+`entry-cw ( pos* -- )` (fixe `wd-cwn` octets et `wd-cww` largeur du
+caractère), `entry-layout ( -- )` (gfx : `wd-text-width` x8 en pixels pour
+les polices de la banque). `wrap-row-end` découpe PAR LARGEUR (colonnes en
+console/VGA, pixels pour les polices Cream) ; règle conservée : un espace
+n'est un point de coupure que s'il TIENT dans la largeur (sinon
+`pty_uxn_wrap` échoue), au moins un caractère par rangée.
+
+### Carte mémoire ACTUELLE (vérifier avec `make layout`)
+Code entrée |0100- (graphique : fin `gfx-end` ~|2827 ; console : `con-end`
+~|0997, tous deux visibles dans le .sym) ; code partagé `|2900` (finit
+~|3860) ; données : ulog |3900, rlog |3d80 (0x480 chacun = 288
+enregistrements de 4 o), clip |4200 (0x200), wd-arg2 |4400 (2e argv, 30 o),
+gfx-inp |4440, gfx souris |4468-|4478, gfx-rep |44a0, gfx-pglyph |44d0,
+gfx-prop/pok/fsel/fbase/fmsg |44f0-|44f5, gfx-pw |4500 (largeurs police en
+banque), wd-fname |4600, wd-buf |4700 de 0xb800 = 47 104 octets (jusqu'à
+|ff00). Chaque octet de code
+gagné rend de la place au tampon : si le code grossit au-delà de la zone,
+déplacer `core.tal` ET les données (le tampon rétrécit d'autant).
+Historique du tampon : 48 640 o au départ → 43 264 o (annuler 2,3 Ko, TOC,
+recherche/remplacement, sélection, polices ~1 Ko, souris ~0,7 Ko, etc.) →
+47 104 o après avoir déplacé la police VGA dans la banque (-3,6 Ko de code).
+Zero-page : gfx |0000-|002d, core |0030-|00bf (annuler |009c, marques |00aa,
+wd-cwn/cww |00bc, wd-trunc |00bf), gfx |00ba-|00bb et |00c0-|00ff : QUASI PLEINE ;
+mettre les nouvelles variables gfx en RAM (`;var LDA/STA`, zone |4468).
+
+### Polices (graphique)
+- 0 = VGA 8x16 (`Uni2-VGA16.psf` de Linux), 224 glyphes de 16 o
+  (`fonts/vga16.bin`) à l'octet 0x6300 de la BANQUE 1 ; `draw-char` copie le
+  glyphe (cpyl de 16 o, commande `gfx-xv`) dans `gfx-pglyph`. Codes 0x20-0xff +
+  extras 0x80-0x88 (’ … – — “ ” œ Œ €). TOUTE police passe par la banque :
+  sans expansion le ROM l'écrit sur stderr et quitte (`msg-nobank`).
+- BANQUE 1 (`fonts/fonts.bank`, 3 blobs UF2 de 0x2100 octets : 256 largeurs
+  puis 256 glyphes de 32 o = 4 tuiles 8x8 haut-gauche, bas-gauche,
+  haut-droite, bas-droite) : 1 = Cream 10x16 (`fonts/Cream16x10.psf`, fourni
+  par l'utilisateur, chasse fixe, tout le français) ; 2 = « Cream proportional
+  (left) » = `fonts/cream12.uf2` (dépôt `left`, MIT, `fonts/LICENSE-left-MIT.txt`)
+  + complément composé par `tools/mkfont.py` pour « » ¿ ¡ ’ … – — “ ” œ Œ € ;
+  3 = Cream 10x16 rendue proportionnelle (encre mesurée +2 px, espace 5).
+  `fonts/cream.uf2` (ancienne cream ASCII de uxn/projects/fonts) = repli.
+- Accès : `gfx-set-font`/`gfx-fetch` copient un glyphe (cpyl via
+  `System/expansion`, bloc de commande en RAM `gfx-xw`/`gfx-xg`, adresse
+  source patchée aux octets +5/+6) ; largeurs recopiées une fois dans
+  `gfx-pw`. Sans support d'expansion `gfx-pok`=0 et on reste en VGA.
+- Choix au démarrage : jeton `fN` dans le 2e argv (`gfx-arg-font`).
+- Police du dernier `left.rom` (itch.io) = « ank » 12x24 à empattements,
+  chasse fixe, NON reprise (24 px de haut : il faudrait paramétrer la hauteur
+  de rangée partout). Sources de `left` : le site sourcehut bloque les robots
+  (curl/WebFetch : 418/502) mais `git clone https://git.sr.ht/~rabbits/left`
+  fonctionne (branche `newfont` aussi) ; `etc/` contient ank_latin24.uf3,
+  cream12.uf2, monaco12.uf2...
+
+### Souris (graphique)
+`uxnemu` MASQUE le pointeur système (SDL_ShowCursor(DISABLE)) : on dessine une
+flèche 8x8 sur la couche AVANT (sprite 0x41, 0x42 bouton enfoncé, 0x40
+efface), comme `left`. Clic gauche = curseur, glisser = sélection (ancre au
+clic), clic milieu = mot (`gfx-select-word`), molette = 3 rangées (le
+curseur peut alors sortir de l'écran : `gfx-draw-cursor` ne dessine pas hors
+fenêtre). `gfx-pos-at` convertit pixel → position en rejouant `wrap-row-end`
+puis `entry-cw`. Mode édition seulement. Pas d'auto-défilement pendant un
+glisser, pas de double-clic.
+
+### Fichier trop gros
+`load-file` lit 0xb800 octets puis sonde 1 octet de plus (le device File
+continue où il s'est arrêté) ; si ça répond : `wd-trunc`=1, `save-file`
+REFUSE d'écrire (sinon la suite du fichier serait détruite), notice au
+démarrage (mode gfx 9) + `[file too big, truncated: saving disabled]` dans la
+barre ; `[buffer full]` quand le tampon est plein. Une seule ligne de dizaines
+de Ko est très lente (retour à la ligne quadratique).
+
+### Tests (méthode)
+- Console : `tests/pty_uxn_*.py` via `tests/pty_harness.py` (pty + réponse DSR).
+- Graphique SANS fenêtre : `tests/gfx_headless.py` compile une copie de
+  `uxn2.c` (bug File corrigé, expansion OK) avec un mode scripté :
+  `frame`, `key`, `ctrl X`, `btn 0x..`, `enter/bksp/esc/del`, `mouse X Y`,
+  `mdown/mup/mmid`, `wheel N`, `shot f.png`. `tests/gfx_regress.py` rejoue
+  des scénarios puis Ctrl+S et compare le FICHIER (moyen fiable de tester la
+  logique). Cache du binaire : `/tmp/uxn2-headless` -- le SUPPRIMER quand on
+  modifie le générateur (il n'est reconstruit que si uxn2.c est plus récent).
+- Vrai `uxnemu` : `tests/uxnemu_shim.c` (LD_PRELOAD, `SDL_VIDEODRIVER=dummy
+  SDL_RENDER_DRIVER=software`) injecte clavier/souris SDL ; il remplace aussi
+  `SDL_WaitEvent`. Code retour 0 = le ROM a quitté, 124 = toujours là.
+- NE JAMAIS piloter `uxnemu` avec xdotool sur le vrai écran de l'utilisateur :
+  ses frappes atterrissent dans la fenêtre de test (déjà arrivé).
+- Dans les scénarios gfx, finir par `esc` avant `ctrl s` quand un mode
+  (recherche, remplacement) est actif, sinon la sauvegarde est interceptée.
+
+### Pièges découverts depuis le piège #21
+1. `uxnasm` compte les lambdas (`?{ }`) sur UN OCTET : > 256 dans l'assemblage
+   => « Label duplicate: } » absurde. Tout `writhdeck-gfx.tal` utilise
+   `?&kN ... &kN` (équivalent exact sans lambda) ; faire pareil pour tout
+   nouveau bloc gfx. Le cœur partagé et la console utilisent encore `?{ }`.
+2. Un vecteur (on-reset, on-first-frame, on-button, on-mouse…) finit par `BRK`,
+   JAMAIS `JMP2r` (pile de retour vide : saut n'importe où).
+3. Polarité : « exécuter le bloc quand X != 0 » = `X #00 EQU ?{` ;
+   « quand X == 0 » = `X #00 EQU #00 EQU ?{` (et `X ?&label` saute quand X != 0).
+   Inversée plusieurs fois (gfx-on-input, Retour arrière du cœur, etc.),
+   toujours attrapée par un test scénario.
+4. `uxnasm` ne détecte pas un chevauchement code/données (piège #13) : le
+   journal d'annulation a une fois été placé dans le code partagé sans erreur.
+5. Pas de `uxn2` pour les fichiers : bug amont `emu_deo(Uint8 addr, ...)`
+   tronque l'adresse RAM de File/name et File/read ; touche aussi `left.rom`.
+6. Un espace exactement à la limite de largeur n'est PAS un point de coupure
+   (voir Architecture).
+7. Les polices en banque : le ROM doit faire exactement 0xff00 octets avant les
+   données (sinon la banque 1 est décalée) ; `append_bank.py` écrit `.size`
+   (taille du code) pour `check_layout.py`.
+8. Les tuiles de glyphe sont opaques : en police proportionnelle on EFFACE la
+   rangée entière avant de dessiner (sinon des restes de l'image précédente).
+9. Détection de l'émulateur : `Screen/width` vaut 0 sous `uxncli` et est non
+   nul sous `uxnemu`/`uxn2` (vérifié).
+10. Scroll molette sur une zone dont le curseur sort de l'écran : normal, le
+    prochain mouvement/frappe rappelle `clamp-scroll`.
+
+### Idées / à faire (par ordre de rentabilité)
+1. **ROM unique console + graphique** (possible, NON fait). `uxncli` n'a pas de
+   device Screen : lire `.Screen/width DEI2` au démarrage (0 → console, sinon
+   graphique) puis brancher les vecteurs de l'un ou l'autre mode. Il faut :
+   préfixer les labels en double des deux entrées (`quit`, `after-edit`,
+   `after-move`, `status-*`, `draw-*`…), fusionner les zero-pages
+   (console |0020-|002f chevauche gfx), rendre `entry-cw`/`entry-layout`/
+   `entry-finish-boot` dynamiques (drapeau de mode), fusionner les deux
+   `on-reset`. Coût estimé : ~2,3 Ko de code en plus (tampon -2 Ko) et un
+   fichier ROM de 83 Ko pour tout le monde ; gain : un seul ROM, wrapper plus
+   simple, `uxncli rom` ou `uxnemu rom` au choix. Les deux suites de tests
+   existantes couvrent déjà les deux chemins.
+2. (fait : VGA dans la banque) ; journaux d'annulation plus courts si besoin.
+3. Porter à la console : recherche, remplacement, aller à la ligne, sélection.
+4. Auto-défilement pendant un glisser, double-clic = mot, clic droit.
+5. Police « ank » 12x24 de `left` : demande des rangées de hauteur variable.
+6. Documents > 64 Ko par banques (README « Ideas / roadmap ») : positions 24
+   bits + tampon paginé, réécriture de la plupart de `core.tal`.
 
 ## Pourquoi le mode console (contexte de la décision)
 
@@ -50,631 +221,16 @@ ressort inchangé.
   guillemet fermant** — `"," ` écrit DEUX octets, la virgule puis le
   guillemet, pas juste une virgule).
 
-## Pièges rencontrés (à vérifier avant de toucher du nouveau code)
-
-### 1. `?{ BLOC }` s'exécute quand le flag est 0 (FAUX), PAS quand il est non-nul
-
-Contre-intuitif si on lit ça comme un `if` classique. Vérifié par un
-programme de test autonome (poussé sur la pile, comparé, sauté). Règle
-mécanique appliquée dans tout le fichier : calculer l'opcode de
-comparaison qui correspond littéralement à la condition en français/
-anglais (EQU pour "==", NEQ pour "!=", LTH pour "<", GTH pour ">"),
-puis **toujours** ajouter `#00 EQU` juste avant `?{` pour inverser.
-
-**Exception documentée dans le code** : une boucle du genre "avancer
-tant que compte >= seuil" (`clamp-scroll`) a besoin de la comparaison
-BRUTE (non inversée) — inverser ici produit une boucle infinie
-silencieuse (uxn n'a aucune protection contre les fautes, voir
-ci-dessous), un des bugs les plus longs à isoler de tout ce portage.
-
-### 2. Un label nu (sans préfixe) compile en CALL, pas en push d'adresse
-
-**Le bug le plus répandu rencontré ici (163 occurrences corrigées d'un
-coup).** Toute référence à une variable zero-page doit avoir le
-préfixe `.` (`.wd-cursor` pour LDZ2/STZ2) — l'oublier fait que
-l'assembleur traite l'adresse de la variable comme une cible de saut,
-et l'exécution saute silencieusement dans de la donnée traitée comme
-du code. Symptôme observé : l'exécution s'arrête net juste après un
-`STZ`/`STZ2`, sans aucun message d'erreur d'`uxnasm` ni de `uxncli`.
-
-**Comment appliquer :** si un nouveau fichier `.tal` "s'arrête" sans
-raison après une écriture zero-page, grep immédiatement les références
-à cette variable pour vérifier le préfixe `.` avant de chercher un bug
-de logique ailleurs.
-
-### 3. Le device `System` n'a PAS de champ `/vector`
-
-Contrairement à `Console`/`File`. Layout réel (vérifié dans
-`uxn/src/devices/system.c`) : `/wst`=0x04 (1o), `/rst`=0x05 (1o),
-`/metadata`=0x06-07 (2o), 6 octets de bourrage (registres couleur
-inutilisés ici), `/debug`=0x0e (1o), `/state`=0x0f (1o) — c'est
-exactement cet octet que `uxncli.c` (`uxn.dev[0x0f]`) vérifie pour
-savoir s'il faut s'arrêter. Déclaration correcte utilisée dans ce
-fichier :
-
-```
-|04 @System/wst $1 &rst $1 &metadata $2 [ $6 ] &debug $1 &state $1
-```
-
-Supposer un `&vector $2` en tête (copier-coller le motif Console/File)
-décale tous les champs suivants de 2 octets : l'écriture d'arrêt
-atterrit silencieusement à la mauvaise adresse, Ctrl+Q semble "faire
-quelque chose" (affiche la séquence de sortie d'alt-buffer) mais le
-processus ne se termine jamais.
-
-**Aussi :** l'arrêt doit passer par un `DEO` en mode octet
-(`#80 .System/state DEO`), pas `DEO2` — pousser une short 2 octets
-avec un `DEO` 1 octet laisse un octet parasite sur la pile et n'écrit
-que 0x00 dans le registre, donc le bit d'arrêt n'est jamais réellement
-posé.
-
-### 4. uxn n'a AUCUNE protection contre les fautes — méthode de debug
-
-`uxn.c` (`uxn_eval`) n'a aucune vérification de bornes sur les
-pointeurs de pile (`Uint8` bruts) : un déséquilibre de pile cause une
-corruption de données silencieuse (sauts/valeurs garbage), jamais un
-crash ni un message d'erreur. Ni `uxnasm` ni `uxncli` ne signalent
-rien de ce genre non plus.
-
-**Ce qui a marché ici :** insérer des marqueurs temporaires
-`#XX putc` (XX = octet ASCII distinct) ou `wd-print-dec` (dump la
-valeur décimale d'une short zero-page) à chaque point de contrôle
-suspecté, réassembler avec `uxnasm`, lancer via un harnais Python pty
-(`pty.openpty()` + `tty.setraw(slave)` + `subprocess.Popen(...,
-stdin=slave, stdout=slave, stderr=slave)` + polling `select`), et lire
-jusqu'où l'exécution est allée et quelles valeurs intermédiaires sont
-sorties. C'est ce qui a permis d'isoler le bug `min2` (voir plus bas)
-: aucun symptôme autre que "le curseur Haut/Bas atterrit au mauvais
-endroit", résolu en dumpant curseur/début-de-ligne/fin-de-ligne à
-chaque étape de `move-down`.
-
-**Comment appliquer :** face à un comportement uxn incorrect sans
-sortie d'erreur, ne pas chercher une exception — poser des marqueurs
-séquentiels `putc`/`wd-print-dec` encadrant chaque routine suspectée,
-exactement comme un debug par printf dans un langage sans débogueur.
-
-### 5. `uxncli` n'active pas le mode raw du terminal lui-même
-
-Aucun appel `termios`/`tcsetattr` nulle part dans `uxn/src/` (confirmé
-en lisant les sources, et par le TODO du README de `kibi` : "Make
-emulator change to raw mode"). Sans ça, les touches tapées sont
-échotées et bufferisées ligne par ligne au lieu d'arriver octet par
-octet. Corrigé ici par le script `writhdeck-uxn` (wrapper shell, motif
-copié de `apps/kibi/src/kibi`) qui appelle `stty` avant/après le
-lancement du rom. Le harnais de test Python doit faire l'équivalent
-via `tty.setraw(slave)` avant `subprocess.Popen`.
-
-### 6. Sandbox fichiers d'`uxncli`
-
-Le device File refuse silencieusement (`/success` = 0, pas d'erreur
-visible dans le programme) d'ouvrir un chemin qu'il considère hors de
-son "sandbox" — en pratique, lancer `writhdeck-uxn` depuis un répertoire
-qui contient (ou est) celui du fichier ciblé. Un chemin absolu ailleurs
-sur le système, ou un `..` s'échappant d'un cwd sans rapport, peut être
-bloqué par `uxncli` avant même que le rom ne le voie. Voir aussi la
-note "Sandbox" du `README.md`.
-
-### 7. `DUP`/`POP` pour dupliquer un octet avant deux tests successifs : source de résidu de pile
-
-Un idiome tentant pour "tester un octet contre deux valeurs" est
-`DUP #20 EQU ?{ ... } DUP #09 EQU ?{ ... } POP` (dupliquer une fois,
-consommer une copie par test, jeter l'original à la fin). Le risque :
-si UN SEUL chemin (une branche prise, un retour anticipé au milieu du
-bloc) oublie ce `POP` final, il reste un octet parasite sur la pile de
-travail — exactement la classe de bug de la note System (`&vector`
-fantôme) et de `min2` ci-dessus, sauf que celui-ci ne se voit même pas
-à la relecture rapide du code, il faut tracer chaque branche à la main.
-
-**Ce qui a été fait dans `is-heading`** (détection de titre Markdown,
-ajoutée pour la coloration syntaxique) : éviter `DUP`/`POP` entièrement
-— relire l'octet en mémoire (`.wd-tmpN LDZ2 ;wd-buf ADD2 LDA`) à CHAQUE
-comparaison plutôt que de garder une copie sur la pile. Plus verbeux
-(une lecture mémoire de plus par comparaison, coût négligeable à cette
-échelle), mais chaque bloc `?{ }` devient trivialement équilibré :
-rien n'est poussé sans être dépilé sur TOUS les chemins de CE bloc
-précis, donc il n'y a plus besoin de tracer l'ensemble de la routine
-à la main pour vérifier l'équilibre de la pile.
-
-**Comment appliquer :** pour toute nouvelle routine qui teste un même
-octet contre plusieurs valeurs, préférer relire depuis la mémoire
-(zero-page ou `;wd-buf ADD2 LDA`) à chaque comparaison plutôt que
-`DUP`/`POP` — surtout si la routine a plusieurs points de sortie
-(`JMP2r`/`BRK` anticipés), où il est facile d'oublier le `POP` sur un
-chemin de sortie précoce.
-
-### 8. uxn/Varvara n'expose AUCUNE variable d'environnement au programme
-
-Pas de `getenv`, pas d'accès a `$HOME` depuis Uxntal — confirmé en
-cherchant dans `uxn/src/` : aucun device n'expose l'environnement du
-process hote. Consequence concrete : le repli de
-`writhdeck-c`/`writhdeck-asm` sur `$HOME/Documents/writhdeck/
-writhdeck.ini` quand `writhd.ini` est absent du repertoire courant est
-**structurellement impossible** a porter ici, pas juste "pas encore
-fait". `load-config` (lecture de `writhd.ini` pour les marges) ne lit
-QUE le repertoire courant, avec une note explicite dans son commentaire
-d'en-tete et dans le README expliquant pourquoi le second chemin
-n'existe pas dans ce port.
-
-**Comment appliquer :** avant de porter une fonctionnalite C/asm qui
-suppose une variable d'environnement, verifier d'abord si un device uxn
-l'expose (chercher dans `uxn/src/devices/*.c`) plutot que de supposer
-qu'un contournement existe — pour `$HOME` specifiquement, il n'y en a
-aucun.
-
-### 9. Reutiliser `wd-buf` comme tampon scratch AVANT le chargement du vrai fichier
-
-`load-config` lit `writhd.ini` directement DANS `wd-buf` (le tampon de
-~61 Ko du document) plutot que de reserver un tampon .ini dedie —
-`wd-buf` n'a AUCUNE place libre pour un tampon separe, il s'etend deja
-jusqu'a la toute fin des 64 Ko adressables (`|1100 @wd-buf $ef00` =
-`0x1100+0xef00 = 0x10000` pile). Cette reutilisation est sure
-UNIQUEMENT parce que `load-config` tourne dans `finish-boot` AVANT
-`load-file` (qui ecrasera `wd-buf` avec le vrai contenu) et avant que
-quoi que ce soit d'autre n'y touche. `.wd-buflen` est aussi
-DELIBEREMENT repointee vers la taille du fichier `.ini` le temps du
-parsing (pour reutiliser `line-end`/`buf-has-prefix` tels quels sans
-leur passer une borne separee) — ce qui veut dire que `finish-boot`
-DOIT explicitement remettre `.wd-buflen` a 0 pour le cas "brouillon
-vide" juste apres `load-config` (avant cet ajout, ce cas s'appuyait
-IMPLICITEMENT sur le fait que la RAM uxn demarre a zero et n'avait
-jamais besoin d'une remise a zero explicite — ça a change des que
-`load-config` a commence a l'ecrire).
-
-**Comment appliquer :** toute nouvelle routine de boot qui reutilise
-`wd-buf`/`wd-buflen` comme scratch temporaire doit imperativement
-tourner AVANT `load-file`, et `finish-boot` doit explicitement remettre
-`wd-buflen` dans l'etat attendu par la suite (0 pour un brouillon vide)
-juste apres — ne JAMAIS compter sur l'etat "RAM demarre a zero" une
-fois qu'une routine de boot a deja ecrit dans cette zone.
-
-### 10. Exception documentée à la règle d'inversion : test "est un chiffre"
-
-`parse-ini-value` (parseur `.ini`) teste si un octet est un chiffre
-via `(octet-'0') <= 9` en arithmétique NON SIGNÉE (si `octet<'0'`, la
-soustraction sous-flotte et redevient une valeur énorme, donc une
-SEULE comparaison `GTH` couvre les deux bornes à la fois). Ceci
-introduit une DEUXIÈME exception à la règle "toujours inverser avec
-`#00 EQU` avant `?{ }`" (la première étant la boucle `count>=seuil` de
-`clamp-scroll`, voir plus haut) : le bloc qui accumule le chiffre doit
-s'exécuter sur le FAUX de "diff>9" (c'est un chiffre) — `GTH` brut,
-SANS inversion, correspond déjà exactement à ce que `?{ }` attend (0
-déclenche). L'inverser donnerait le résultat inverse. Vérifié par
-double négation : `GTH #00 EQU #00 EQU` (invert-puis-invert) est
-algébriquement identique à `GTH` seul quand l'entrée est un booléen
-canonique 0/1 — ce qui confirme que "vouloir le bloc sur le FAUX d'une
-comparaison" se traduit par AUCUNE inversion, et "vouloir le bloc sur
-le VRAI" se traduit par UNE SEULE inversion, jamais deux. Voir le
-commentaire directement au-dessus de `@parse-ini-value` dans le code.
-
-**Comment appliquer :** avant d'ajouter une inversion "par réflexe",
-se demander explicitement si le bloc doit s'exécuter sur le VRAI ou le
-FAUX de la comparaison — ce n'est PAS toujours le VRAI (deux exceptions
-déjà rencontrées dans ce fichier, toutes deux dans des boucles
-numériques, pas dans des dispatches de touches/octets classiques où la
-règle par défaut s'est toujours revérifiée correcte jusqu'ici).
-
-### 11. `EQU`/`NEQ`/`GTH`/`LTH` (mode octet) contre `EQU2`/`NEQ2`/`GTH2`/`LTH2` (mode short) — piège le plus coûteux du word-wrap
-
-**Confondre les deux a produit le bug le plus long à isoler de tout ce
-portage** (ajout du word-wrap pour la colonne collante Haut/Bas et le
-défilement en rangées visuelles) : comparer deux valeurs `$2`
-(positions dans le tampon, presque tout ce que ce fichier manipule)
-avec l'opcode SANS le `2` ne compare que les DEUX OCTETS DE POIDS FORT
-restés en haut de pile après un dépilage partiel -- ni une erreur
-d'assemblage, ni un crash, juste un résultat de comparaison
-n'importe-quoi ET un résidu de pile (2 octets non consommés) qui
-continue à circuler sous les valeurs suivantes, décalant TOUT calcul
-ultérieur dans la même routine. Trouvé ici dans `move-up`
-(`.wd-tmp1 LDZ2 .wd-tmp2 LDZ2 EQU` au lieu de `EQU2`) et
-`visual-row-start` (même erreur, deux fois). Symptôme observé, très
-trompeur : le programme ne plantait ni ne bouclait au sens strict --
-il redevenait silencieusement inerte (plus aucune sortie) après un
-Bas/Haut précis, uxncli restant bloqué dans un `read(0, ...)` comme si
-de rien n'était, ce qui ressemblait exactement à "la touche suivante
-n'arrive jamais" plutôt qu'à "une comparaison a mal tourné trois
-fonctions plus haut".
-
-**Comment appliquer :** avant de committer toute nouvelle comparaison,
-vérifier explicitement si les DEUX operandes sont `$1` (octet, ex. un
-octet lu via `LDA`/`LDZ`/`DEI`) ou `$2` (short, ex. une position dans
-`wd-buf`, une largeur, un compteur) -- quasiment tout ce qui vient de
-`LDZ2`/`LDA` sur une adresse construite avec `ADD2`/`;wd-buf` est un
-short. Une astuce de relecture : grep `LDZ2.*LDZ2.*\bEQU\b` (ou NEQ/
-GTH/LTH) sans le `2` dans tout le fichier -- si ça remonte quelque
-chose, c'est presque toujours ce bug (voir aussi le piège #7 plus
-haut, qui recommande de toujours relire l'octet en mémoire plutôt que
-`DUP`/`POP` : ce conseil n'aide PAS ici, puisque le bug est un mauvais
-CHOIX D'OPCODE, pas une histoire de résidu de pile lié à `DUP`).
-
-### 12. Mauvais opcode de comparaison choisi (pas juste polarité inversée) : `visual-row-before`
-
-Distinct du piège #11 (mode octet/short) ET des exceptions de polarité
-(#10, `clamp-scroll`) : `visual-row-before` utilisait `NEQ2` pour
-tester "row-start est-il tout au début du document ?" alors que la
-condition voulue est littéralement "line_start == 0" -- `NEQ2` teste
-l'INVERSE de ce qui était réellement voulu, pas juste la bonne
-comparaison mal polarisée. Trouvé en traçant Haut apres Bas x4 sur un
-document a deux lignes : le curseur revenait immediatement lá où il
-était au lieu de reculer d'une rangée. Corrigé en `EQU2`.
-
-**Comment appliquer :** relire chaque comparaison en la reformulant
-d'abord en français/anglais SANS y penser en opcodes ("est-ce que X
-vaut 0 ?" plutôt que "est-ce que je dois inverser ?"), PUIS choisir
-l'opcode qui correspond mot-à-mot à cette phrase (EQU pour "vaut",
-NEQ pour "ne vaut pas") avant d'appliquer la règle d'inversion du
-piège #1 -- l'ordre compte : choisir le bon opcode d'abord, l'inverser
-ensuite, jamais les deux en même temps de tête.
-
-### 13. `|1000`/`|1100` (bootstrap initial) étaient des adresses codées en dur, jamais revérifiées à mesure que le fichier grossissait
-
-`uxnasm` ne détecte PAS et ne signale RIEN quand une directive `|ADDR`
-rembobine le curseur d'assemblage EN ARRIÈRE par rapport à ce qui a
-déjà été écrit plus loin -- elle se contente de repositionner le
-curseur, silencieusement, laissant la réservation suivante (`$N`)
-écraser/chevaucher tout ce qui avait déjà été assemblé dans cette
-plage. Rencontré ici : le word-wrap + les marges + le parseur `.ini`
-ont fait grossir le code au-delà de `0x1000` (`|1000 @wd-fname $100`),
-si bien qu'`ini-filename`/`ini-section-editor`/`wd-meta` atterrissaient
-À L'INTÉRIEUR de l'espace réservé à `wd-fname`, corrompant leur
-contenu -- symptôme observé : blocage silencieux au tout premier
-Ctrl+Q après ouverture d'un brouillon vide, qui n'avait EN RÉALITÉ
-aucun rapport avec Ctrl+Q lui-même (juste la première chose lue depuis
-de la mémoire déjà corrompue). Corrigé en repoussant `|1000`→`|1400`
-et `|1100`→`|1500`, avec une marge confortable au-dessus de la taille
-réellement utilisée à ce moment (~0x1052).
-
-**Comment appliquer :** après tout ajout de code substantiel, vérifier
-qu'aucun label ne chevauche `wd-fname`/`wd-buf` en inspectant le
-fichier `.sym` généré par `uxnasm` (`python3 -c "..."` pour décoder les
-paires adresse/nom, voir le format binaire simple : short big-endian
-puis nom NUL-terminé) -- chercher spécifiquement si `wd-fname` apparaît
-à l'adresse EXACTE déclarée par `|1400 @wd-fname` (actuellement) et si
-un label de DONNÉES (`ini-*`, `wd-meta`) apparaît AVANT lui dans le
-fichier, à une adresse strictement inférieure. Repousser `|1400`/
-`|1500` avec une marge large (pas juste "assez") avant que ça ne
-redevienne un problème.
-
-### 14. Méthode : distinguer un vrai blocage d'un artefact de test AVANT de chasser un bug dans le code
-
-En diagnostiquant le piège #11 ci-dessus, la toute première piste
-explorée (mauvaise) était la corruption mémoire du piège #13 -- des
-heures de traçage plus tard, `strace -f -o trace.txt uxncli ...` a
-révélé que le "blocage" n'était parfois PAS un blocage réel : le
-programme lisait bien le SEUL octet stdin envoyé par le test
-(`read(0, "\21", 1024) = 1`, `\21` = octal = Ctrl+Q), le traitait
-correctement, puis se retrouvait légitimement à attendre une DEUXIÈME
-frappe que le script de test n'envoyait jamais (cas "aucun argv" :
-`on-argv` consomme le tout premier octet stdin comme signal de fin de
-boot, PAS comme une vraie frappe -- comportement préexistant,
-documenté dans le commentaire d'`on-argv` lui-même, pas un bug
-introduit ici). Confirmé en rejouant le MÊME test sur le dernier
-commit connu-bon (`git stash` puis reconstruction) : il "bloquait"
-IDENTIQUEMENT, prouvant que le code en cours n'y était pour rien.
-
-**Comment appliquer :** face à un blocage apparent, AVANT de chasser
-dans le nouveau code : (1) `strace -f -o trace.txt` le process bloqué,
-chercher le dernier `read()`/`write()` pour voir precisement ce qui
-est attendu ; (2) `git stash` et retester le DERNIER COMMIT connu-bon
-avec le MÊME script -- s'il bloque aussi, le bug (ou l'artefact) est
-dans le harnais de test ou l'environnement, pas dans les changements en
-cours ; (3) ne revenir au traçage `putc`/`wd-print-dec` dans le code
-QUE si (2) prouve que le commit precedent fonctionnait.
-
-### 15. Détection dynamique de la taille du terminal (DSR) : même inversion de polarité que le piège #10, sur un NOUVEAU test "est un chiffre"
-
-`on-sizereply` (parse la réponse `ESC[row;colR` à la requête DSR
-envoyée par `send-size-query`, idiome repris de `kibi.tal`) accumule
-les chiffres de la rangée puis de la colonne. Première version, cassée
-silencieusement : `DUP #30 SUB #09 GTH ?{ POP #00 .wd-sz-state STZ BRK
-}` pour "si ce n'est PAS un chiffre, resynchroniser l'état machine à
-0". Ça a exécuté le bloc de resync sur CHAQUE chiffre reçu au lieu de
-l'inverse -- confusion entre les deux idiomes déjà en place dans
-`parse-ini-value` (piège #10) : la boucle de skip y utilise `GTH #00
-EQU ?{ avancer }` (règle standard : `?{ }` s'exécute sur la condition
-NATURELLE une fois complémentée), alors que la boucle d'accumulation
-utilise l'exception documentée `GTH ?{ accumuler }` SANS `#00 EQU`
-(parce que `GTH` y vaut déjà 0 exactement quand c'est un chiffre,
-polarité qui coïncide par chance avec ce que `?{ }` attend). En
-écrivant le test "si non-chiffre, resynchroniser", j'ai copié la
-mauvaise moitié de cette paire -- résultat : chaque chiffre de la
-réponse DSR déclenchait un retour à l'état 0, qui ignore ensuite tout
-octet qui n'est pas ESC, donc toute la réponse `ESC[row;colR` se
-faisait avaler sans jamais atteindre `R` → le boot restait bloqué en
-silence (aucune erreur, aucun rendu). Diagnostiqué en pilotant le rom
-via un script pty qui répond bien au DSR (`ESC[24;80R`) et en observant
-zéro octet de sortie après l'avoir envoyé. Corrigé en ajoutant le `#00
-EQU` manquant aux DEUX endroits ("si non-chiffre, resync" pour la
-rangée ET pour la colonne) -- suit la règle STANDARD du fichier, pas
-l'exception.
-
-**Comment appliquer :** avant d'écrire un nouveau test "est un chiffre"
-ailleurs dans ce fichier, choisir consciemment laquelle des deux formes
-de `parse-ini-value` copier -- `GTH #00 EQU ?{ }` (règle standard, à
-utiliser pour "si CE N'EST PAS un chiffre") ou `GTH ?{ }` sans `#00
-EQU` (exception, valide UNIQUEMENT pour "si c'EST un chiffre", et
-seulement parce que `GTH` y a la polarité qui arrange). Ne jamais
-copier l'un en pensant obtenir l'autre.
-
-### 16. Un harnais de test pty doit répondre à la requête DSR, sinon le boot ne démarre jamais
-
-Depuis l'ajout de la détection dynamique de taille (piège #15), le
-boot envoie `ESC[999C ESC[999B ESC[6n` et attend la réponse `ESC[row;
-colR` AVANT de basculer vers `on-keypress`/premier rendu -- comme
-`kibi.tal`. Un vrai terminal répond automatiquement ; un pty piloté par
-un script Python ne le fait PAS tout seul (rien n'interprète les
-séquences ANSI côté maître du pty). Tous les scripts de test pty de ce
-projet ont dû être mis à jour pour injecter la réponse eux-mêmes
-(`os.write(master, f"\x1b[{rows};{cols}R".encode())`) après un court
-délai suivant le démarrage -- sans ça, chaque test se bloque
-indéfiniment au même endroit (voir piège #14 pour la méthode qui
-distingue ce genre de blocage-par-conception d'un vrai bug). C'est
-précisément pourquoi cette logique vit maintenant dans UN SEUL endroit
-partagé, `tests/pty_harness.py::run()`, plutôt que dupliquée dans
-chaque script `tests/pty_uxn_*.py` -- avant cette factorisation, le fix
-ci-dessus a dû être appliqué identiquement dans six fichiers séparés.
-Tout nouveau script de test doit passer par ce harnais, pas piloter
-`uxncli` directement.
-
-## Architecture console/graphique : `src/core.tal`
-
-`src/core.tal` contient tout ce qui est indépendant du device de
-sortie : tampon plat, édition (`insert-byte`/`backspace`/`shift-*`),
-curseur/word-wrap (`move-*`/`wrap-*`/`visual-row-*`), marges/.ini
-(`compute-layout`/`load-config`/`parse-ini-*`), classification des
-titres (`is-heading`/`is-heading-t2t`), chargement/sauvegarde
-(`load-file`/`save-file`, device `File`), et la capture d'argv
-(`on-argv`, device `Console` -- partagée car `console_arguments()` est
-utilisée par `uxnemu` ET `uxncli`, voir `uxn/src/uxnemu.c:488`). Inclus
-en toute fin de `writhdeck.tal` ET `writhdeck-gfx.tal` via `~src/
-core.tal` (même idiome que `left.tal`/`menu.tal`/`utils.tal` dans
-l'écosystème uxn de référence). Chaque entrée définit son propre
-`@entry-finish-boot` (appelé par `core-boot` une fois le fichier/.ini
-chargés) pour démarrer sa boucle interactive et son premier rendu à sa
-manière.
-
-**Adresses fixes, choisies avec marge** (voir piège #13 : `uxnasm` ne
-détecte PAS un chevauchement de `|ADDR` en arrière) : `|0020`-`|002f`
-pour les variables propres à CHAQUE entrée (budget volontairement
-large : la console y range `wd-esc-state`/`wd-sz-*`/`wd-dcount`, le
-graphique `gfx-*`), `|0030` pour les variables PARTAGÉES (`core.tal`),
-`|0100` pour le code propre à l'entrée, `|2800` pour le code partagé
-(`core.tal`), `|4000`/`|4100` pour `wd-fname`/`wd-buf`. Après toute
-modification significative de taille d'un des deux fichiers, vérifier
-via `.rom.sym` (même technique qu'au piège #13) qu'aucun label
-n'atterrit dans une plage réservée à l'autre section, POUR LES DEUX
-ROMS -- un chevauchement dans `writhdeck-gfx.tal` ne casserait PAS les
-tests automatisés (qui ne couvrent que la console), donc rien ne
-l'attraperait autrement.
-
-### 17. `writhdeck-gfx.tal` n'a JAMAIS été vérifié visuellement -- aucun affichage ni Xvfb dans cet environnement
-
-`uxnemu` (device Screen) a besoin d'un vrai serveur d'affichage SDL ;
-`uxnfb` (framebuffer Linux direct) a besoin d'un vrai `/dev/fb0` et de
-périphériques d'entrée réels. Aucun des deux n'est pilotable en boîte
-noire dans cet environnement (contrairement à `uxncli`, piloté via pty
-pour toute la suite `tests/`) -- `make rom-gfx` assemble sans erreur et
-`.rom.sym` confirme l'absence de chevauchement d'adresses, mais rien de
-plus n'a jamais tourné à l'écran. Plusieurs bugs réels ont été trouvés
-et corrigés a posteriori par relecture manuelle méticuleuse (rejeu
-symbole par symbole de la polarité de chaque `?{ }`, voir piège #1) --
-pas par test :
-- Layout du device `System` copié tel quel depuis un fichier de
-  référence DIFFÉRENT (`uxn/projects/examples/gui/terminal.tal`,
-  version de spec Varvara différente) au lieu de reprendre le layout
-  DÉJÀ VÉRIFIÉ de ce projet (`wst`/`rst`=0x04/0x05, `metadata`=0x06-07,
-  `state`=0x0f, confirmé dans `uxn/src/devices/system.c`) -- aurait
-  écrit `System/r`/`g`/`b` (thème) aux mauvais ports. Corrigé en
-  repartant du layout vérifié et en confirmant `r`/`g`/`b`=0x08/0x0a/
-  0x0c via `uxn/src/devices/screen.c:screen_palette` avant d'ajouter
-  quoi que ce soit.
-- `Controller/button DEI .wd-tmp1 STZ2` -- `DEI` (pas `DEI2`) ne pousse
-  qu'UN octet, `STZ2` en dépile deux : même classe de bug que le piège
-  #11 (résidu de pile silencieux). Corrigé en `STZ`.
-- Trois inversions de polarité `?{ }` DANS DU CODE JAMAIS EXÉCUTÉ (donc
-  aucun symptôme observable, juste une relecture symbole-par-symbole
-  qui les a trouvées) : (1) `on-button` testait "key != 0" avec `NEQ`
-  pour sauter vers le traitement des flèches quand `key==0` -- aurait
-  rendu les flèches QUASIMENT INUTILISABLES (le saut n'arrivait que
-  quand une touche de texte ET les flèches survenaient au même appel,
-  jamais en pratique) ; (2) le test Ctrl-enfoncé utilisait aussi `NEQ`
-  au lieu de `EQU`, ce qui aurait fait sauter Ctrl+Q/Ctrl+S/Ctrl+E
-  quand Ctrl n'était PAS enfoncé -- taper un 'q'/'s'/'e' minuscule tout
-  seul aurait quitté/sauvegardé/déplacé le curseur au lieu de s'insérer
-  comme texte ; (3) `draw-str`/`draw-spaces` utilisaient `NEQ`/`NEQ2`
-  pour détecter respectivement le NUL de fin de chaîne et le compteur
-  à zéro -- aurait causé une boucle infinie lisant la mémoire au-delà
-  du terminateur, ou l'inverse (ne jamais dessiner). Les trois corrigés
-  en `EQU`/`EQU2`. Rejouer la méthode du piège #1 (calculer le flag
-  NATUREL de la condition, PUIS ajouter `#00 EQU`) très explicitement,
-  une ligne à la fois, plutôt que de faire confiance à l'intuition --
-  c'est exactement ce qui a fini par débusquer ces trois-là.
-
-**Comment appliquer :** avant de faire confiance à du code Uxntal
-jamais exécuté, rejouer CHAQUE `?{ }` à la main (table de vérité
-complète, pas juste "ça a l'air bon") et vérifier CHAQUE layout de
-device fixe contre le fichier `.c` source correspondant dans
-`uxn/src/devices/` -- ne jamais copier un layout depuis un AUTRE
-fichier `.tal` de référence sans le revérifier, même si ce fichier
-fonctionne (il peut cibler une version différente de la spec Varvara).
-
-### 18. `writhdeck-gfx.tal` restait abonné à `Console/vector` après le boot -- tout octet de stdin rechargeait le fichier en boucle
-
-Bug réel signalé par l'utilisateur : `uxn2 writhdeck-gfx.rom < fichier`
-"ne chargeait rien". Cause, trouvée en lisant le VRAI émulateur utilisé
-(`/temp/github/uxn-all/implementations/uxn2/uxn2.c`, PAS `uxnemu.c` --
-vérifier avec `md5sum`/`ls -la` lequel des deux binaires installés est
-réellement invoqué avant de chercher dans le mauvais source) :
-`uxnemu`/`uxn2` font tourner un THREAD stdin permanent
-(`stdin_handler`) qui lit le stdin RÉEL du processus octet par octet,
-QUE ce soit un vrai terminal ou une redirection `< fichier`, et pousse
-un événement `Console` (type `STD`) par octet -- inconditionnellement,
-peu importe si le programme utilise `Console` pour autre chose que
-l'argv. `entry-finish-boot` laissait `Console/vector` branché sur
-`on-argv` (`core.tal`) après la capture initiale : chaque octet de
-stdin retombait dans la branche de repli de `on-argv` (ni `ARG` ni
-`EOA`) qui rappelle `core-boot` -- rechargement complet, remise à zéro
-du curseur/scroll/dirty, nouveau rendu, UNE FOIS PAR OCTET. Le vrai
-chemin de chargement de fichier est l'ARGV (`uxn2 rom fichier.txt`,
-voir `on-argv`), jamais stdin -- mais même utilisé correctement, ce
-ré-abonnement restait un bug latent (toute frappe tapée dans le
-terminal qui a lancé `uxn2`, hors de la fenêtre SDL, aurait eu le même
-effet). Corrigé en ajoutant `#0000 .Console/vector DEO2` dans
-`entry-finish-boot`, juste après la lecture de `Screen/width`/`height`
--- `console_input()` côté C saute `uxn_eval` entièrement quand
-`console_vector==0`, donc ça silence tout futur événement `Console`
-proprement. **Ne pas répliquer ce "unbind" côté console
-(`writhdeck.tal`)** : là, `Console/vector` DOIT rester branché en
-permanence -- c'est le mécanisme même par lequel les frappes clavier
-arrivent (`on-keypress`), pas un vestige du boot.
-
-### 19. Accents dans un COMMENTAIRE `.tal` collés à une parenthèse : `uxnasm` lit `char` comme SIGNÉ, tout octet UTF-8 >=0x80 devient un "espace"
-
-Bug réel rencontré en ajoutant le fallback d'accents latin-1 ci-dessous
-(`gfx-utf8-decode`) : `make rom-gfx` échouait avec `Comment incomplete`
-alors que chaque paire de parenthèses semblait équilibrée à l'œil.
-Cause, trouvée en lisant `walkcomment()` dans `uxn/src/uxnasm.c` : la
-variable qui reçoit chaque octet lu est déclarée `char c` (SIGNÉ sur ce
-compilateur/plateforme) ; le test de fin de token est `c <= 0x20`. Tout
-octet de poids >=0x80 -- donc CHAQUE octet d'un caractère UTF-8
-multi-octets dans un commentaire (à, é, ç, Ð...) -- devient négatif une
-fois stocké dans ce `char` signé, et `c <= 0x20` le traite alors comme
-un ESPACE. Une parenthèse collée SANS espace à un caractère accentué
-(ex. `(Ð`) se retrouve donc "détachée" par ce faux espace et comptée
-comme un token `(`/`)` BARE isolé (le compteur de profondeur de
-`walkcomment` ne réagit QU'AUX tokens bare, entourés d'espace des DEUX
-côtés -- une parenthèse collée à du texte ASCII normal, elle,
-n'affecte jamais le compteur). Ça a désynchronisé le compteur de
-profondeur d'un commentaire qui semblait fermé, et l'assembleur a
-scanné jusqu'à la fin du fichier en cherchant une fermeture qui
-n'arriverait jamais. Diagnostiqué en écrivant un petit script Python
-qui rejoue l'algorithme de `walkcomment` sur les OCTETS BRUTS du
-fichier (pas le texte décodé Unicode) pour repérer exactement quelle
-parenthèse était collée à quel octet >=0x80.
-
-**Comment appliquer :** ne JAMAIS coller un caractère non-ASCII
-directement contre une parenthèse dans un commentaire `.tal` (mettre
-un espace, ou reformuler sans le caractère accentué juste à côté).
-Plus généralement, éviter les accents dans les commentaires `.tal` de
-ce projet quand une formulation ASCII équivalente existe -- le risque
-ne vaut pas le gain esthétique, et ce piège est facile à réintroduire
-sans y penser en écrivant en français.
-
-### 20. `writhdeck-gfx.tal` lancé SANS argument fichier : écran noir pour toujours -- `core-boot` ne demarrait QUE via `on-argv`
-
-Bug réel signalé par l'utilisateur juste après le correctif du piège
-#18 ci-dessus : `uxn2 bin/writhdeck-gfx.rom` (sans le moindre argument
-fichier, cas "brouillon vide") affichait un écran entièrement noir, en
-permanence. Cause : `core-boot` (donc le tout premier `gfx-render`)
-n'était déclenché QUE par la branche de repli de `on-argv`
-(`core.tal`), elle-même déclenchée par `Console/type` valant `END`(4)
-ou `STD`(1). Or, en lisant `main()` dans `uxn2.c`/`uxnemu.c` :
-l'envoi de l'argv vers `Console` est un simple `for(; i < argc; i++)`
-sur les arguments EXTRA du ROM -- si aucun n'a été passé, cette boucle
-ne s'exécute PAS DU TOUT, et n'envoie donc RIEN, ni `ARG`, ni `EOA`, ni
-même un `END`/`STD` de circonstance. Le seul autre expéditeur possible
-d'un événement `Console` est le thread stdin (voir piège #18) -- qui
-lit le VRAI stdin du PROCESSUS (le terminal qui a lancé `uxn2`, pas la
-fenêtre SDL), et bloque indéfiniment tant que rien n'y est tapé/piped.
-Résultat : sans argument fichier, ET sans activité sur le terminal de
-lancement, `on-argv` n'était donc simplement jamais rappelé, et
-`core-boot`/`entry-finish-boot`/`gfx-render` ne tournaient JAMAIS --
-d'où l'écran noir permanent, symptôme bien plus sévère que le piège
-#18 (qui ne touchait que le cas AVEC un fichier passé en argument).
-
-Corrigé en ajoutant un second déclencheur GARANTI, indépendant de
-`Console` : `Screen/vector`, que l'émulateur appelle inconditionnellement
-à chaque frame une fois la fenêtre ouverte (`screen_update()` dans
-`uxn2.c`/`uxnemu.c`), et l'ouverture de la fenêtre (`emu_init()`/
-`emu_run()`) arrive TOUJOURS après l'envoi synchrone de l'argv (s'il y
-en a un) dans `main()` -- vérifié en lisant l'ordre exact des appels.
-`on-first-frame` (nouveau, cablé sur `Screen/vector` depuis `on-reset`)
-appelle donc `core-boot` lui-même si `on-argv` ne l'a pas déjà fait
-(chemin fichier), protégé par un drapeau `gfx-booted` mis à 1 dans
-`entry-finish-boot` -- puis se désabonne immédiatement de
-`Screen/vector`, inutile au-delà de ce tout premier appel.
-
-**Comment appliquer :** pour tout code Uxntal qui doit démarrer une
-séquence de boot au tout début du programme, ne JAMAIS dépendre d'un
-seul vecteur/événement qui pourrait ne jamais arriver selon la façon
-dont le ROM est lancé (ici : argument fichier présent ou non) --
-identifier un événement GARANTI par la boucle principale de
-l'émulateur (ici : le premier appel à `Screen/vector`, dès que la
-fenêtre existe) comme filet de sécurité, protégé par un drapeau pour
-rester idempotent si le déclencheur "normal" a déjà fait le travail.
-
-### 21. Le mode graphique PEUT être testé ici (DISPLAY=:0 + xdotool + import) ; `uxn2` ne charge aucun fichier (bug émulateur)
-
-Contrairement à ce que dit le piège #17, un affichage X existe :
-`uxnemu bin/writhdeck-gfx.rom f.txt &`, puis `xdotool search --pid`,
-`xdotool key/type`, `import -window ID out.png` et lecture du PNG.
-Vérifié : chargement, saisie, flèches, Ctrl+S fonctionnent sous
-`uxnemu` (fichier dans le cwd, voir piège #6). Sous `uxn2` (source
-`/temp/github/uxn-all/implementations/uxn2/uxn2.c`), `emu_deo(Uint8
-addr, ...)` écrase son paramètre 8 bits `addr` avec l'adresse RAM
-16 bits de File/name -> nom lu en page 0 = vide, aucun fichier ne se
-charge (bug amont, reproduit avec une mini-ROM). Aucun contournement
-raisonnable côté ROM : utiliser `uxnemu`. Aussi corrigé : polarité de
-`on-first-frame` (`NEQ #00 EQU ?{` relançait `core-boot` quand le boot
-avait DÉJÀ eu lieu, et ne le lançait pas sinon).
-
-Test graphique SANS fenêtre ni vol de focus : `tests/gfx_headless.py` (émulateur
-uxn2 compilé à partir des sources, mode scripté, capture PNG). NE PAS piloter
-uxnemu avec xdotool sur le vrai écran de l'utilisateur : les frappes de
-l'utilisateur atterrissent dans la fenêtre de test. Lanceur unique : `./writhdeck-uxn
-[-c|-g] [-n] [-s LxH] [-z N] [fichier]` (sans argument : aide` (cd dans le répertoire du fichier).
-
-CARTE MÉMOIRE (rechecker avec `make layout`, lancé par `make test`) : code entrée |0100- (la version graphique va jusqu'à ~|2e00 avec la police), code partagé core.tal |3000-~|3ef0, données |4000+ : ulog |4000, rlog |4480 (journaux d'annulation 0x480 chacun = 288 enregistrements de 4 octets), clip |4900 (presse-papiers 512 o), wd-arg2 |4b00, gfx-inp/gfx-dimbuf/gfx-rep |4b40/|4b80/|4ba0, wd-fname |4c00, wd-buf |4d00 de 0xb200 octets (jusqu'à |ff00). `uxnasm` ne détecte AUCUN chevauchement code/données (piège #13) : un premier jet avait mis ulog dans le code partagé sans erreur, passé inaperçu parce que ces octets ne servaient qu'au boot. Toute zone de données doit être déclarée APRÈS la fin du code et `tests/check_layout.py` doit passer.
-Zero-page : gfx |0000-|002d, core |0030-|00b9 (marques |00aa, annuler |009c), gfx |00ba-|00bf et |00c0-|00ff. Il ne reste quasiment rien.
-Tests : `tests/pty_uxn_*.py` (console, pty), `tests/gfx_regress.py` (graphique sans fenêtre via gfx_headless.py : touches puis Ctrl+S puis comparaison du fichier -- c'est le moyen fiable de tester la logique d'édition), `tests/uxnemu_shim.c` (événements SDL injectés dans le vrai uxnemu).
-Fonctions du moteur : annuler/rétablir dans core (`rec-push`, `undo`, `redo`, groupes par frappe contiguë), marques en ligne `mark-step`/`mark-prime` + `is-comment`, partagées console/graphique. Console : Ctrl+Z=0x1a, Ctrl+Y=0x19. Graphique : sélection `gfx-sel` (ancre, vidéo inverse = couleur sprite 4), `gfx-copy/paste`, remplacement `gfx-repl-*` (modes 6-8, tampons gfx-inp/gfx-rep échangés pour saisir le 2e champ).
-FICHIER TROP GROS : `load-file` lit exactement 0xb200 octets puis sonde 1 octet de plus (le device File continue là où il s'est arrêté) ; si ça répond, `wd-trunc`=1, `save-file` refuse d'écrire (sinon le reste du fichier serait écrasé), bandeau d'état + notice au démarrage (mode gfx 9). `[buffer full]` quand buflen == 0xb200. Une seule ligne de dizaines de Ko est très lente (word-wrap quadratique).
-IDÉE NOTÉE (non faite) : documents > 64 Ko via les banques d'expansion de Varvara (voir README, "Ideas / roadmap") -- positions 24 bits + tampon paginé, réécriture de la plupart de core.tal.
-Gfx modes (`gfx-mode`) : 0 édition, 1 TOC, 2 aller à la ligne, 3 recherche, 4 confirmation de sortie, 5 aide ; dispatch dans `gfx-on-mode`. Raccourcis : Ctrl+S/Q/E/T/D/G/F/H, Ctrl+Haut/Bas = pages, Ctrl+Début = haut du document, Suppr = 0x7f.
-PIÈGES DE CETTE ÉTAPE : (1) `uxnasm` a un compteur de lambdas (`?{ }`) sur UN OCTET : > 256 `?{` dans l'assemblage => « Label duplicate: } » absurde. Tout `src/writhdeck-gfx.tal` utilise donc `?&kN ... &kN` (équivalent exact, aucune lambda) ; écrire les nouveaux blocs de la même façon. (2) zero-page graphique pleine : |0000-|0025 puis |00c0-|00ff (core |0030-|009a). (3) `core.tal` est maintenant en |2800 (le code graphique dépassait |2000). (4) polarité : « exécuter le bloc quand X != 0 » = `X #00 EQU ?{`, « quand X == 0 » = `X #00 EQU #00 EQU ?{` -- j'ai inversé les deux dans gfx-on-input et gfx-inp digit/backspace, trouvé par capture headless. (5) core : `backspace`/`move-*`/`delete-forward`/`snap-cursor` travaillent par caractère UTF-8 (`is-cont`).
-Gfx : Ctrl+T = TOC (`gfx-toc-*`, vars en |00c0), Ctrl+D = thème clair/sombre
-(`gfx-apply-theme`, option `light` dans le 2e argv). PIÈGE : un vecteur
-(on-first-frame, on-button...) se termine par `BRK`, JAMAIS `JMP2r` -- la pile
-de retour est vide, JMP2r dépile une vieille adresse et saute n'importe où.
-
-Police graphique : table `gfx-font` = 224 glyphes (codes 0x20-0xff) générés
-depuis `/usr/share/consolefonts/Uni2-VGA16.psf.gz` (même style VGA que l'ancienne
-police ; extras 0x80-0x88 = ’ … – — “ ” œ Œ €). `gfx-utf8-decode` renvoie
-(code, octets consommés) ; colonne du curseur/pad calculées en cellules
-(`gfx-cells`, `Screen/x`), le word-wrap de core.tal reste en octets.
-2e argv = taille `LxH` (`wd-arg2` en |3f00, `gfx-parse-size`).
-Variables gfx maintenant à partir de |0000 (RAM page 0 libre en dessous de 0x30).
-
-## Bug de logique réel (pas un piège de langage) : `min2`
-
-`move-up`/`move-down` utilisent `min2 ( a* b* -- min* )` pour clamper
-la "colonne collante" du curseur à la fin de la ligne visée. Une
-première version avait `NIP2`/`POP2` inversés (NIP2 garde le TOP et
-jette le second ; POP2 jette le TOP) : `min2` renvoyait systématiquement
-le MAX au lieu du MIN, donc Haut/Bas clampaient toujours le curseur au
-bout de la ligne plutôt qu'à la colonne visée. Corrigé, avec le
-commentaire explicatif directement dans le code à côté de `@min2` —
-relire ce commentaire avant de retoucher cette routine, l'erreur est
-facile à réintroduire en pensant "NIP2 = garder le premier, POP2 =
-garder le second" sans revérifier la sémantique exacte des deux
-opcodes.
-
 ## Où regarder pour le contexte fonctionnel
 
-- `README.md` : périmètre exact, touches supportées, limites connues
-  (curseur en octets, sandbox fichiers), instructions de build/run/test
-  pour les DEUX entrées (console et graphique).
-- `src/writhdeck.tal` : commentaire d'en-tête qui documente la règle
-  de polarité `?{ }` et les décisions de portée du bootstrap.
-- `src/core.tal` : logique partagée console/graphique -- voir
-  "Architecture console/graphique" plus haut.
-- `src/writhdeck-gfx.tal` : entrée graphique, JAMAIS vérifiée
-  visuellement (piège #17) -- toute modification doit être relue à la
-  main aussi rigoureusement qu'écrite, pas juste "ça assemble".
-- `tests/` : suite de régression pty (`make test`) -- COUVRE
-  UNIQUEMENT LA CONSOLE (voir piège #17, `uxnemu`/`uxnfb` non
-  pilotables en boîte noire ici). `tests/pty_harness.py` pour le
-  harnais partagé (répond notamment à la requête DSR de taille de
-  terminal, voir piège #16).
-- `../writhdeck-c` et `../writhdeck-asm` : ports de référence pour la
-  logique métier (buffer, édition, rendu) en cas de doute sur un
-  comportement souhaité au-delà de ce premier amorçage.
+- `README.md` (court) → `docs/MANUAL.md` (manuel d'utilisation, anglais) ;
+  `docs/REFERENCE.md` : ancien README détaillé (périmètre exact, algorithmes, limites).
+- `docs/PIEGES.md` : pièges Uxntal #1-#16 (polarité de `?{ }`, labels nus,
+  EQU/EQU2, layout de System, méthode de debug...) -- à lire AVANT de toucher
+  du nouveau code Uxntal.
+- `docs/ARCHITECTURE.md` : architecture console/graphique, pièges #17-#21.
+- `src/writhdeck.tal` / `src/writhdeck-gfx.tal` : les deux entrées ;
+  `src/core.tal` : logique partagée.
+- `tests/` : `make test` (console pty + graphique sans fenêtre + carte mémoire).
+- `../writhdeck-c` et `../writhdeck-asm` : ports de référence pour la logique
+  métier ; `../../writhdeck/writhdeck.tcl` : l'original Tcl (fonctions de référence).

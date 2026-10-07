@@ -211,6 +211,23 @@ JMP2r
     wd-render
 BRK
 
+( hooks de core.tal : largeur d'un caractere. Console = 1 colonne par
+| caractere UTF-8, quel que soit son nombre d'octets. )
+@entry-cw ( pos* -- )
+    #01 .wd-cww STZ
+    #01 .wd-cwn STZ
+    &loop
+        .wd-cwn LDZ #04 LTH #00 EQU ?&done
+        DUP2 #00 .wd-cwn LDZ ADD2 .wd-buflen LDZ2 LTH2 #00 EQU ?&done
+        DUP2 #00 .wd-cwn LDZ ADD2 is-cont #00 EQU ?&done
+        .wd-cwn LDZ INC .wd-cwn STZ
+        !&loop
+    &done
+    POP2
+JMP2r
+
+@entry-layout ( -- ) JMP2r
+
 @quit ( -- )
     alt-buf-off
     #80 .System/state DEO
@@ -343,7 +360,7 @@ JMP2r
     .wd-cursor LDZ2 .wd-cursor LDZ2 line-start SUB2 #0001 ADD2 wd-print-dec
     .wd-dirty LDZ #00 NEQ #00 EQU ?{ ;status-dirty str-log }
     .wd-trunc LDZ #00 EQU ?&nt ;status-trunc str-log &nt
-    .wd-buflen LDZ2 #b200 LTH2 ?&nf ;status-full str-log &nf
+    .wd-buflen LDZ2 #b800 LTH2 ?&nf ;status-full str-log &nf
     clear-eol
     ansi-reset
 JMP2r
@@ -442,5 +459,7 @@ JMP2r
 @wd-meta [ $1
     "writhdeck-uxn 0a
     "console-mode 0a 00 ]
+
+@con-end
 
 ~src/core.tal

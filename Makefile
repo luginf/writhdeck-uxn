@@ -15,8 +15,14 @@ bin:
 rom: bin
 	$(UXNASM) $(SRC) $(ROM)
 
-rom-gfx: bin
+fonts/fonts.bank: fonts/cream12.uf2 fonts/cream.uf2 fonts/Cream16x10.psf fonts/vga16.bin tools/mkfont.py
+	python3 tools/mkfont.py fonts/cream-latin1.uf2
+
+# the proportional font travels in expansion bank 1 (the rom file is padded
+# to 0xff00 bytes then the font follows; Varvara loads it into bank 1)
+rom-gfx: bin fonts/fonts.bank
 	$(UXNASM) $(SRC_GFX) $(ROM_GFX)
+	python3 tools/append_bank.py $(ROM_GFX) fonts/fonts.bank
 
 run: rom
 	./writhdeck-uxn $(if $(FILE),$(FILE),-n)

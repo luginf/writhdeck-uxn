@@ -8,6 +8,9 @@
 #     -s, --size WxH     graphical window size in pixels (e.g. 1280x800)
 #     -z, --zoom N       graphical window zoom 1 to 3 (uxnemu -2x / -3x)
 #     -l, --light        graphical mode: black on white (Ctrl+D toggles)
+#     -f, --font NAME    graphical mode font: vga (default), cream (10x16, with
+#                        French accents), prop (proportional cream of left),
+#                        creamprop (Cream 10x16 made proportional); Ctrl+P cycles
 #     -h, --help
 #
 # The file is opened from ITS directory (uxn's File device refuses any path
@@ -20,9 +23,9 @@
 # same limitation as kibi.tal, same remedy: disable icanon/echo before
 # running the rom and restore afterwards (even on error).
 DIR=$(cd "$(dirname "$0")" && pwd)
-MODE=cli SIZE= ZOOM= FILE= LIGHT=
+MODE=cli SIZE= ZOOM= FILE= LIGHT= FONT=
 
-usage() { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; }
 
 [ $# -eq 0 ] && { usage; exit 0; }
 
@@ -30,6 +33,8 @@ while [ $# -gt 0 ]; do
     case "$1" in
         -n|--new) ;;
         -l|--light) LIGHT=light ;;
+        -f|--font) FONT=$2; shift ;;
+        --font=*) FONT=${1#--font=} ;;
         -c|--cli) MODE=cli ;;
         -g|--gui) MODE=gui ;;
         -s|--size) SIZE=$2; shift ;;
@@ -46,7 +51,7 @@ done
 
 # rebuild the rom when a source is newer than it (or it is missing)
 stale() {
-    [ ! -f "$1" ] || [ -n "$(find "$DIR/src" -name '*.tal' -newer "$1" 2>/dev/null | head -n 1)" ]
+    [ ! -f "$1" ] || [ -n "$(find "$DIR/src" "$DIR/fonts" "$DIR/tools" -type f -newer "$1" 2>/dev/null | head -n 1)" ]
 }
 ensure_rom() {
     if stale "$1"; then
@@ -62,7 +67,7 @@ if [ -n "$FILE" ]; then
 fi
 
 if [ "$MODE" = cli ]; then
-    [ -n "$SIZE$ZOOM$LIGHT" ] && echo "writhdeck-uxn: --size/--zoom/--light ignored in terminal mode" >&2
+    [ -n "$SIZE$ZOOM$LIGHT$FONT" ] && echo "writhdeck-uxn: --size/--zoom/--light/--font ignored in terminal mode" >&2
     ROM=$DIR/bin/writhdeck.rom
     ensure_rom "$ROM" rom
     TTY=`stty -g`
@@ -83,7 +88,9 @@ esac
 case "$ZOOM" in ""|1) ZF= ;; 2) ZF=-2x ;; 3) ZF=-3x ;;
     *) echo "writhdeck-uxn: invalid zoom '$ZOOM' (1, 2 or 3)" >&2; exit 2 ;; esac
 # the size is the rom's 2nd argument: without a file, pass an empty 1st one
-ARG2=$SIZE${LIGHT:+ $LIGHT}
+case "$FONT" in ""|vga) FT= ;; cream) FT=f1 ;; prop) FT=f2 ;; creamprop) FT=f3 ;;
+    *) echo "writhdeck-uxn: invalid font '$FONT' (vga, cream, prop or creamprop)" >&2; exit 2 ;; esac
+ARG2=$SIZE${LIGHT:+ $LIGHT}${FT:+ $FT}
 ARG2=${ARG2# }
 if [ -n "$ARG2" ]; then set -- "$FILE" "$ARG2"; else set -- ${FILE:+"$FILE"}; fi
 exec ${UXNEMU:-uxnemu} $ZF "$ROM" "$@"

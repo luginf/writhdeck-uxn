@@ -2,7 +2,8 @@
    gcc -shared -fPIC -o shim.so uxnemu_shim.c $(sdl2-config --cflags) -ldl
    SHIMQ=1 SDL_RENDER_DRIVER=software SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
      LD_PRELOAD=./shim.so SHIM="W,W,T:abc,W,D:400000e0,D:71,U:71,U:400000e0,W" uxnemu bin/writhdeck-gfx.rom f.txt
-   SHIM : T:texte  D:sym_hex (KEYDOWN)  U:sym_hex (KEYUP)  W (attendre ~30 frames).
+   SHIM : T:texte  D:sym_hex (KEYDOWN)  U:sym_hex (KEYUP)  W (attendre ~30 frames)
+          M:x:y (mouvement souris)  P:n (bouton n enfonce)  R:n (relache).
    0x400000e0 = SDLK_LCTRL. Code de sortie 0 = le rom a quitte, 124 (timeout) = toujours la. */
 #define _GNU_SOURCE
 #include <SDL.h>
@@ -33,6 +34,14 @@ int SDL_PollEvent(SDL_Event *e){
 			long sym = strtol(pos + 2, &end, 16);
 			e->type = kind == 'D' ? SDL_KEYDOWN : SDL_KEYUP; e->key.keysym.sym = sym;
 			if(sym == SDLK_LCTRL) { if(kind == 'D') mods |= KMOD_LCTRL; else mods &= ~KMOD_LCTRL; }
+			pos = (*end == ',') ? end + 1 : end; return 1;
+		} else if(kind == 'M'){
+			int x = (int)strtol(pos + 2, &end, 10), y = (int)strtol(end + 1, &end, 10);
+			e->type = SDL_MOUSEMOTION; e->motion.x = x; e->motion.y = y;
+			pos = (*end == ',') ? end + 1 : end; return 1;
+		} else if(kind == 'P' || kind == 'R'){
+			int b = (int)strtol(pos + 2, &end, 10);
+			e->type = kind == 'P' ? SDL_MOUSEBUTTONDOWN : SDL_MOUSEBUTTONUP; e->button.button = b;
 			pos = (*end == ',') ? end + 1 : end; return 1;
 		} else if(kind == 'W'){ waitn = 30; pos = strchr(pos, ',') ? strchr(pos, ',') + 1 : pos + strlen(pos); return real_poll(e); }
 	}
