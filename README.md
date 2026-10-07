@@ -117,8 +117,9 @@ screen row).
 
 Arrows (Up/Down/Left/Right, sticky column across lines), Home/End,
 Enter, Backspace, Ctrl+S (save — only if a filename was given on the
-command line; no save-as prompt), Ctrl+Q (quit unconditionally, no
-"unsaved changes" confirmation).
+command line; no save-as prompt), Ctrl+Q (quit; if the buffer is
+modified it first asks in the status bar: `s` save and quit, `y` quit
+without saving, any other key cancels — both builds).
 
 Graphical build only (the Controller device reports no function keys,
 and `uxnemu` keeps F11 for fullscreen, so everything is Ctrl+letter;

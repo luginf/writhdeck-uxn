@@ -38,6 +38,7 @@
 |0020
 @wd-esc-state   $1  ( 0=idle 1=vu ESC 2=vu ESC[ )
 @wd-dcount      $1  ( wd-print-dec : nombre de chiffres empiles sur rst )
+@wd-confirm     $1  ( 1 = confirmation de sortie en attente, voir try-quit )
 @wd-tmp34       $2  ( partage wd-render/render-row (rendu console) : fin
                     | de la rangee affichee -- wd-render la calcule
                     | (wrap-row-end), render-row la lit comme borne
@@ -146,9 +147,10 @@ BRK
 @on-keypress ( -> )
     .Console/read DEI
     .wd-esc-state LDZ #00 NEQ #00 EQU ?{ handle-escape BRK }
+    .wd-confirm LDZ #00 NEQ #00 EQU ?{ handle-confirm BRK }
 
     DUP #1b EQU #00 EQU ?{ POP #01 .wd-esc-state STZ BRK }
-    DUP #11 EQU #00 EQU ?{ POP quit BRK }
+    DUP #11 EQU #00 EQU ?{ POP try-quit BRK }
     DUP #13 EQU #00 EQU ?{ POP save-file wd-render BRK }
     DUP #0d EQU #00 EQU ?{ POP #0a insert-byte after-edit BRK }
     DUP #0a EQU #00 EQU ?{ POP #0a insert-byte after-edit BRK }
@@ -181,6 +183,28 @@ JMP2r
     clamp-scroll
     wd-render
 JMP2r
+
+( Ctrl+Q : quitte tout de suite si rien n'a change, sinon demande
+| confirmation dans la barre d'etat -- s sauvegarde puis quitte, y quitte
+| sans sauvegarder, toute autre touche annule. )
+@try-quit ( -- )
+    .wd-dirty LDZ #00 EQU ?{
+        #01 .wd-confirm STZ
+        wd-render
+        JMP2r }
+    quit
+JMP2r
+
+@handle-confirm ( byte -- )
+    #00 .wd-confirm STZ
+    DUP #79 EQU #00 EQU ?{ POP quit BRK }
+    DUP #59 EQU #00 EQU ?{ POP quit BRK }
+    .wd-fname-len LDZ #00 EQU ?{
+        DUP #73 EQU #00 EQU ?{ POP save-file quit BRK }
+        DUP #53 EQU #00 EQU ?{ POP save-file quit BRK } }
+    POP
+    wd-render
+BRK
 
 @quit ( -- )
     alt-buf-off
@@ -280,6 +304,10 @@ JMP2r
     #0001 wd-print-dec
     #48 putc
     ansi-reverse
+    .wd-confirm LDZ #00 EQU ?{
+        .wd-fname-len LDZ #00 EQU #00 EQU ?{ ;msg-quit-draft str-log clear-eol ansi-reset JMP2r }
+        ;msg-quit str-log clear-eol ansi-reset
+        JMP2r }
     .wd-fname-len LDZ #00 NEQ #00 EQU ?{ wd-fname-status }
     .wd-fname-len LDZ #00 EQU #00 EQU ?{ ;draft-label str-log }
     ;status-sep str-log
@@ -369,6 +397,8 @@ JMP2r
 | combine pas plusieurs attributs SGR. )
 @ansi-heading-seq [ 1b "[31m 00 ]
 
+@msg-quit "Unsaved 20 "changes! 20 20 "s: 20 "save 20 "and 20 "quit 20 20 "y: 20 "quit 20 "without 20 "saving 20 20 "other 20 "key: 20 "cancel 00
+@msg-quit-draft "Unsaved 20 "draft! 20 20 "y: 20 "quit 20 "without 20 "saving 20 20 "other 20 "key: 20 "cancel 00
 @draft-label "[draft] 00
 @status-sep 20 "-- 20 00
 @status-comma 2c 00

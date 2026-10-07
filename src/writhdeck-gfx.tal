@@ -346,17 +346,17 @@ JMP2r
         #04 .gfx-mode STZ
         gfx-render
         JMP2r &k0
-    quit
+    quit-clean
 JMP2r
 
 @gfx-on-quit ( -> )
     .Controller/key DEI .gfx-tb STZ
     .gfx-tb LDZ #00 EQU #00 EQU ?&k0 BRK &k0
-    .gfx-tb LDZ #79 EQU #00 EQU ?&k1 quit BRK &k1
-    .gfx-tb LDZ #59 EQU #00 EQU ?&k2 quit BRK &k2
+    .gfx-tb LDZ #79 EQU #00 EQU ?&k1 quit-discard BRK &k1
+    .gfx-tb LDZ #59 EQU #00 EQU ?&k2 quit-discard BRK &k2
     .wd-fname-len LDZ #00 EQU ?&k3
-        .gfx-tb LDZ #73 EQU #00 EQU ?&k4 save-file quit BRK &k4
-        .gfx-tb LDZ #53 EQU #00 EQU ?&k5 save-file quit BRK &k5 &k3
+        .gfx-tb LDZ #73 EQU #00 EQU ?&k4 save-file quit-saved BRK &k4
+        .gfx-tb LDZ #53 EQU #00 EQU ?&k5 save-file quit-saved BRK &k5 &k3
     #00 .gfx-mode STZ
     gfx-render
 BRK
@@ -870,6 +870,26 @@ JMP2r
 
 @toc-title "Table 20 "of 20 "contents 00
 @toc-help "Up/Down: 20 "select 20 "-- 20 "Enter: 20 "go 20 "-- 20 "Esc: 20 "back 00
+
+( trace sur stderr : indique qui a demande la sortie, pour distinguer une
+| sortie decidee par le rom d'une fermeture venant de l'emulateur ou du
+| gestionnaire de fenetres. )
+@say ( str* -- )
+    &loop
+        LDAk #00 EQU ?&done
+        LDAk .Console/error DEO
+        INC2 !&loop
+    &done
+    POP2
+    #0a .Console/error DEO
+JMP2r
+
+@quit-clean ( -- ) ;msg-q-clean say quit JMP2r
+@quit-discard ( -- ) ;msg-q-discard say quit JMP2r
+@quit-saved ( -- ) ;msg-q-saved say quit JMP2r
+@msg-q-clean "writhdeck-uxn: 20 "quit, 20 "buffer 20 "unmodified 00
+@msg-q-discard "writhdeck-uxn: 20 "quit, 20 "changes 20 "discarded 00
+@msg-q-saved "writhdeck-uxn: 20 "quit, 20 "saved 00
 
 @quit ( -- )
     #80 .System/state DEO
