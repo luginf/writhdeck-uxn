@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.2.0
+
+- **The terminal build catches up with the graphical one**: Delete, Home/End
+  (all the usual escape variants), PgUp/PgDn, Shift+arrows selection with
+  Ctrl+A/C/X/V, Ctrl+G go to line, Ctrl+F find, Ctrl+R replace, Ctrl+T table of
+  contents, F1 help, word count in the status bar. The editing engine now
+  lives in the shared core, used by both builds.
+- **Optional mouse in the terminal build** (`writhdeck-uxn -m`): click, drag to
+  select, middle click for a word, wheel.
+- **The launcher starts the graphical build by default** (terminal build with
+  `-c`, or automatically when there is no display).
+- **All fonts, VGA included, now live in the font bank**, so the editing
+  buffer grew from 43 KB to 46 KB.
+- Roms renamed: `writhdeck.rom` is the graphical build and `writhdeck-cli.rom`
+  the terminal build (as in v0.1.0 after its update).
+- Shared code fixes: word-wrap by character width, undo/redo, protection
+  against saving a file that was too big to load.
+
+Usage as before: `uxnemu writhdeck.rom file.txt [WxH] [light] [f1|f2|f3]` and
+`uxncli writhdeck-cli.rom file.txt [mouse]`, or the `writhdeck-uxn` launcher in
+the repository. Do not open files with `uxn2` (upstream bug).
+
 ## v0.1.0
 
 First public release. Two ready-to-run roms:

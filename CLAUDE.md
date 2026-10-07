@@ -40,14 +40,14 @@ autre machine.
   Emulateur graphique par défaut `uxnemu` (jamais `uxn2`, voir pièges).
 - Release GitHub : `tools/release.sh vX.Y.Z [--dry-run]` construit les deux ROM dans
   `dist/` (+ SHA256SUMS, notes extraites de `docs/CHANGELOG.md`) et publie avec `gh`
-  (connecté au compte `luginf`) ou, à défaut, `$GH_TOKEN`. v0.1.0 est publiée (assets renommés après coup : `writhdeck.rom` = graphique, `writhdeck-cli.rom` = terminal ; le tag a ensuite été déplacé (force) sur le commit du renommage) :
+  (connecté au compte `luginf`) ou, à défaut, `$GH_TOKEN`. v0.1.0 puis v0.2.0 sont publiées (v0.1.0 : assets renommés après coup : `writhdeck.rom` = graphique, `writhdeck-cli.rom` = terminal ; le tag a ensuite été déplacé (force) sur le commit du renommage) :
   https://github.com/luginf/writhdeck-uxn/releases/tag/v0.1.0 . Pour la suivante :
   ajouter une section `## vX.Y.Z` à `docs/CHANGELOG.md`, commiter, taguer
   (`git tag -a`, `git push origin vX.Y.Z`), puis lancer le script (si la release existe déjà il remplace les fichiers et les notes).
 - Le ROM graphique fait 0xff00 octets de code PUIS la banque de polices
-  (`tools/append_bank.py`) : ~94 Ko au total, chargé par uxncli/uxnemu/uxn2.
+  (`tools/append_bank.py`) : ~94 Ko au total (la console fait ~14 Ko), chargé par uxncli/uxnemu/uxn2.
 
-### Fonctions (graphique ; la console a presque tout sauf souris/thèmes/polices : voir plus bas)
+### Fonctions (graphique ; la console a presque tout sauf thèmes/polices : voir plus bas)
 Ctrl+S sauver ; Ctrl+Q quitter (confirmation si modifié, trace sur stderr) ;
 Ctrl+Z/Y annuler/rétablir ; Ctrl+F recherche ; Ctrl+R remplacer (y/n/a) ;
 Ctrl+G ligne ; Ctrl+T table des matières ; Ctrl+D clair/sombre ; Ctrl+P
@@ -80,9 +80,10 @@ n'est un point de coupure que s'il TIENT dans la largeur (sinon
 `pty_uxn_wrap` échoue), au moins un caractère par rangée.
 
 ### Carte mémoire ACTUELLE (vérifier avec `make layout`)
-Code entrée |0100- (graphique : fin `gfx-end` ~|2827 ; console : `con-end`
-~|0997, tous deux visibles dans le .sym) ; code partagé `|2900` (finit
-~|3860) ; données : ulog |3900, rlog |3d80 (0x480 chacun = 288
+Code entrée |0100- (graphique : fin `gfx-end` ~|2019 ; console : `con-end`
+~|0997, tous deux visibles dans le .sym) ; code partagé `|2100` (finit
+~|38a6, marge ~0x5a avant les données : la prochaine addition de code oblige à décaler
+les données de 0x100 = tampon -256 o) ; données : ulog |3900, rlog |3d80 (0x480 chacun = 288
 enregistrements de 4 o), clip |4200 (0x200), wd-arg2 |4400 (2e argv, 30 o),
 gfx-inp |4440, gfx souris |4468-|4478, gfx-rep |44a0, gfx-pglyph |44d0,
 gfx-prop/pok/fsel/fbase/fmsg |44f0-|44f5, gfx-pw |4500 (largeurs police en
@@ -198,7 +199,7 @@ de Ko est très lente (retour à la ligne quadratique).
    simple, `uxncli rom` ou `uxnemu rom` au choix. Les deux suites de tests
    existantes couvrent déjà les deux chemins.
 2. (fait : VGA dans la banque) ; journaux d'annulation plus courts si besoin.
-3. Porter à la console : recherche, remplacement, aller à la ligne, sélection.
+3. (fait : fonctions et souris en option dans la console). Reste : thèmes/polices côté console.
 4. Auto-défilement pendant un glisser, double-clic = mot, clic droit.
 5. Police « ank » 12x24 de `left` : demande des rangées de hauteur variable.
 6. Documents > 64 Ko par banques (README « Ideas / roadmap ») : positions 24
