@@ -40,9 +40,10 @@ autre machine.
   Emulateur graphique par défaut `uxnemu` (jamais `uxn2`, voir pièges).
 - Release GitHub : `tools/release.sh vX.Y.Z [--dry-run]` construit les deux ROM dans
   `dist/` (+ SHA256SUMS, notes extraites de `docs/CHANGELOG.md`) et publie avec `gh`
-  ou, à défaut, `$GH_TOKEN` (API REST). `gh` n'est pas installé sur cette machine et
-  aucun jeton n'y est configuré : v0.1.0 a été commitée et taguée (poussée sur
-  `luginf/writhdeck-uxn`), la release elle-même est à publier avec ce script.
+  (connecté au compte `luginf`) ou, à défaut, `$GH_TOKEN`. v0.1.0 est publiée :
+  https://github.com/luginf/writhdeck-uxn/releases/tag/v0.1.0 . Pour la suivante :
+  ajouter une section `## vX.Y.Z` à `docs/CHANGELOG.md`, commiter, taguer
+  (`git tag -a`, `git push origin vX.Y.Z`), puis lancer le script.
 - Le ROM graphique fait 0xff00 octets de code PUIS la banque de polices
   (`tools/append_bank.py`) : ~94 Ko au total, chargé par uxncli/uxnemu/uxn2.
 
