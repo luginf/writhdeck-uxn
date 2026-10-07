@@ -25,6 +25,7 @@ make rom rom-cli          # needs uxnasm and python3
 | --- | --- |
 | `-g` / `-c` | graphical (default; falls back to the terminal build when there is no display) / terminal build |
 | `-n` | start an empty draft, no file |
+| `-m` | terminal build: enable the mouse (click, drag to select, middle click = word, wheel). It takes the mouse away from the terminal's own selection (use Shift+drag for that) |
 | `-s WxH` | graphical window size in pixels, e.g. `1280x800` (default 960x576) |
 | `-z 1\|2\|3` | zoom the graphical window |
 | `-l` | start in the light theme (black on white) |
@@ -136,8 +137,8 @@ Nothing else is read (uxn cannot read environment variables, so there is no
   appears when typing fills the buffer. Split big texts into several files.
   Very long single lines (tens of KB without a newline) are slow.
 - No save-as, no system clipboard, left Shift only, no F-keys.
-- The terminal build lacks the graphical extras: mouse, themes and fonts (it
-  uses the terminal's own).
+- The terminal build lacks themes and fonts (it uses the terminal's own); its
+  mouse is optional (`-m`).
 
 ## Tests
 

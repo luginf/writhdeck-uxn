@@ -120,12 +120,6 @@
 |446a @gfx-mpy $2
 |446c @gfx-mdn $1     ( 1 = bouton gauche enfonce )
 |446d @gfx-mvis $1    ( 1 = pointeur deja dessine )
-|446e @gfx-mrow $2    ( gfx-pos-at : rangee ecran visee )
-|4470 @gfx-mp $2      ( position courante )
-|4472 @gfx-mend $2    ( fin de la rangee )
-|4474 @gfx-macc $2    ( largeur cumulee en pixels )
-|4476 @gfx-mxx $2     ( x relatif au texte )
-|4478 @gfx-mw $2      ( largeur du caractere en pixels )
 
 |0100
 
@@ -517,16 +511,16 @@ BRK
 @gfx-mouse-buttons ( -- )
     .Mouse/scrolly DEI2 #0000 EQU2 ?&noscroll
     .Mouse/scrolly DEI2 #8000 LTH2 ?&down
-    gfx-scroll-up gfx-scroll-up gfx-scroll-up
+    ed-scroll-up ed-scroll-up ed-scroll-up
     gfx-render
     JMP2r
     &down
-    gfx-scroll-down gfx-scroll-down gfx-scroll-down
+    ed-scroll-down ed-scroll-down ed-scroll-down
     gfx-render
     JMP2r
     &noscroll
     .Mouse/state DEI #02 AND #00 EQU ?&nomid
-    ;gfx-mpx LDA2 ;gfx-mpy LDA2 gfx-pos-at gfx-select-word
+    ;gfx-mpx LDA2 ;gfx-mpy LDA2 gfx-pos-at ed-select-word
     #00 .Mouse/state DEO
     gfx-render
     JMP2r
@@ -558,88 +552,34 @@ BRK
     &ret
 JMP2r
 
-( clic du milieu : selectionne le mot sous le pointeur, comme left )
-@gfx-select-word ( pos* -- )
-    DUP2 ;gfx-mp STA2
-    ;gfx-mend STA2
-    &l1
-        ;gfx-mp LDA2 #0000 EQU2 ?&e1
-        ;gfx-mp LDA2 #0001 SUB2 ;wd-buf ADD2 LDA #21 LTH ?&e1
-        ;gfx-mp LDA2 #0001 SUB2 ;gfx-mp STA2
-        !&l1
-    &e1
-    &l2
-        ;gfx-mend LDA2 .wd-buflen LDZ2 LTH2 #00 EQU ?&e2
-        ;gfx-mend LDA2 ;wd-buf ADD2 LDA #21 LTH ?&e2
-        ;gfx-mend LDA2 INC2 ;gfx-mend STA2
-        !&l2
-    &e2
-    ;gfx-mp LDA2 .ed-sel STZ2
-    ;gfx-mend LDA2 .wd-cursor STZ2
-JMP2r
-
-@gfx-scroll-up ( -- )
-    .wd-scroll LDZ2 visual-row-before .wd-scroll STZ2
-JMP2r
-
-@gfx-scroll-down ( -- )
-    .wd-scroll LDZ2 .wd-text-width LDZ2 wrap-row-end
-    DUP2 .wd-buflen LDZ2 LTH2 ?&ok
-    POP2
-    JMP2r
-    &ok
-    wrap-next-start .wd-scroll STZ2
-JMP2r
-
-( x* y* -- pos* : position du tampon sous un point de l'ecran )
+( x* y* -- pos* : position du tampon sous un point de l'ecran ; la
+| conversion pixel -> (decalage x, rangee) est faite ici, le parcours est
+| ed-pos-at (core.tal) : 8 px par caractere en VGA, la largeur de la police
+| sinon, avec arrondi au bord le plus proche. )
 @gfx-pos-at
-    #04 SFT2 ;gfx-mrow STA2
-    ;gfx-mxx STA2
-    ;gfx-mrow LDA2 .wd-text-top LDZ2 LTH2 ?&top
-    ;gfx-mrow LDA2 .wd-text-top LDZ2 SUB2 ;gfx-mrow STA2
-    !&clampd
+    #04 SFT2
+    DUP2 .wd-text-top LDZ2 LTH2 ?&top
+    .wd-text-top LDZ2 SUB2
+    !&rowok
     &top
-    #0000 ;gfx-mrow STA2
-    &clampd
-    ;gfx-mrow LDA2 .wd-usable-rows LDZ2 LTH2 ?&inb
-    .wd-usable-rows LDZ2 #0001 SUB2 ;gfx-mrow STA2
-    &inb
-    .wd-scroll LDZ2 ;gfx-mp STA2
-    &rows
-        ;gfx-mrow LDA2 #0000 EQU2 ?&found
-        ;gfx-mp LDA2 .wd-text-width LDZ2 wrap-row-end ;gfx-mend STA2
-        ;gfx-mend LDA2 .wd-buflen LDZ2 LTH2 ?&adv
-        !&found
-        &adv
-        ;gfx-mend LDA2 wrap-next-start ;gfx-mp STA2
-        ;gfx-mrow LDA2 #0001 SUB2 ;gfx-mrow STA2
-        !&rows
-    &found
-    ;gfx-mp LDA2 .wd-text-width LDZ2 wrap-row-end ;gfx-mend STA2
-    ;gfx-mxx LDA2 .wd-eff-margin-cols LDZ2 x8 LTH2 ?&lz
-    ;gfx-mxx LDA2 .wd-eff-margin-cols LDZ2 x8 SUB2 ;gfx-mxx STA2
-    !&walk
+    POP2 #0000
+    &rowok
+    ;ed-mrow STA2
+    .wd-eff-margin-cols LDZ2 x8 OVR2 OVR2 LTH2 ?&lz
+    SUB2
+    !&xok
     &lz
-    #0000 ;gfx-mxx STA2
-    &walk
-    #0000 ;gfx-macc STA2
-    &wl
-        ;gfx-mp LDA2 ;gfx-mend LDA2 LTH2 ?&ch
-        !&done
-        &ch
-        ;gfx-mp LDA2 entry-cw
-        ;gfx-prop LDA ?&pw
-        #0008 ;gfx-mw STA2
-        !&wset
-        &pw
-        #00 .wd-cww LDZ ;gfx-mw STA2
-        &wset
-        ;gfx-mxx LDA2 ;gfx-macc LDA2 ;gfx-mw LDA2 #01 SFT2 ADD2 LTH2 ?&done
-        ;gfx-macc LDA2 ;gfx-mw LDA2 ADD2 ;gfx-macc STA2
-        ;gfx-mp LDA2 #00 .wd-cwn LDZ ADD2 ;gfx-mp STA2
-        !&wl
-    &done
-    ;gfx-mp LDA2
+    POP2 POP2 #0000
+    &xok
+    ;ed-mxx STA2
+    ;gfx-prop LDA ?&prop
+    #08 ;ed-munit STA
+    !&unit
+    &prop
+    #01 ;ed-munit STA
+    &unit
+    #01 ;ed-mround STA
+    ed-pos-at
 JMP2r
 
 ( ===== modes saisie / aide / confirmation ===== )
@@ -998,17 +938,8 @@ JMP2r
 
 @gfx-parse-light ( -- flag )
     #6c
-!gfx-arg-has
+!ed-arg2-has
 
-( ch -- flag : le caractere figure-t-il dans le 2e argument )
-@gfx-arg-has ( ch -- flag )
-    .ed-ib STZ
-    #01 .gfx-pi STZ
-    &loop
-        .gfx-pi LDZ ;wd-arg2 LDA GTH #00 EQU ?&k0 #00 JMP2r &k0
-        ;wd-arg2 #00 .gfx-pi LDZ ADD2 LDA .ed-ib LDZ EQU #00 EQU ?&k1 #01 JMP2r &k1
-        .gfx-pi LDZ INC .gfx-pi STZ
-        !&loop
 
 ( --- table des matieres (Ctrl+T) ---
 | Meme idee que F11 dans writhdeck.tcl/writhdeck-c : ecran plein cadre

@@ -207,7 +207,7 @@
 @wd-mr      $2  ( mark-prime : debut de ligne )
 @wd-mk      $2  ( mark-prime : position de parcours )
 
-|2200
+|2100
 
 ( --- phase 1 : capture du premier argument (chemin de fichier) ---
 | Console/type : STD=1 (frappe normale -- signifie ICI qu'aucun
@@ -1509,11 +1509,105 @@ JMP2r
         .ed-tb LDZ #3d EQU #00 EQU ?&k5 .ed-te LDZ2 #0001 SUB2 .ed-te STZ2 !&trim &k5
 JMP2r
 
+( ===== souris / defilement partages : position sous un point, mot, molette =====
+| ed-pos-at lit ed-mxx (decalage horizontal depuis le bord gauche du texte)
+| et ed-mrow (rangee du texte, 0 = premiere visible), dans l'unite de
+| ed-munit par caractere de largeur wd-cww (console : 1 colonne ; graphique
+| VGA : 8 px ; polices Cream : la largeur en px). ed-mround = 1 : arrondi au
+| bord le plus proche (graphique), 0 : le caractere sous le pointeur
+| (console). Rejoue wrap-row-end rangee par rangee depuis wd-scroll. )
+@ed-pos-at ( -- pos* )
+    ;ed-mrow LDA2 .wd-usable-rows LDZ2 LTH2 ?&inb
+    .wd-usable-rows LDZ2 #0001 SUB2 ;ed-mrow STA2
+    &inb
+    .wd-scroll LDZ2 ;ed-mp STA2
+    &rows
+        ;ed-mrow LDA2 #0000 EQU2 ?&found
+        ;ed-mp LDA2 .wd-text-width LDZ2 wrap-row-end ;ed-mend STA2
+        ;ed-mend LDA2 .wd-buflen LDZ2 LTH2 ?&adv
+        !&found
+        &adv
+        ;ed-mend LDA2 wrap-next-start ;ed-mp STA2
+        ;ed-mrow LDA2 #0001 SUB2 ;ed-mrow STA2
+        !&rows
+    &found
+    ;ed-mp LDA2 .wd-text-width LDZ2 wrap-row-end ;ed-mend STA2
+    #0000 ;ed-macc STA2
+    &wl
+        ;ed-mp LDA2 ;ed-mend LDA2 LTH2 ?&ch
+        !&done
+        &ch
+        ;ed-mp LDA2 entry-cw
+        .wd-cww LDZ ;ed-munit LDA MUL #00 SWP ;ed-mw STA2
+        ;ed-mround LDA ?&half
+        ;ed-mw LDA2 !&thr
+        &half
+        ;ed-mw LDA2 #01 SFT2
+        &thr
+        ;ed-macc LDA2 ADD2 ;ed-mxx LDA2 GTH2 ?&done
+        ;ed-macc LDA2 ;ed-mw LDA2 ADD2 ;ed-macc STA2
+        ;ed-mp LDA2 #00 .wd-cwn LDZ ADD2 ;ed-mp STA2
+        !&wl
+    &done
+    ;ed-mp LDA2
+JMP2r
+
+( clic du milieu : selectionne le mot sous pos )
+@ed-select-word ( pos* -- )
+    DUP2 ;ed-mp STA2
+    ;ed-mend STA2
+    &l1
+        ;ed-mp LDA2 #0000 EQU2 ?&e1
+        ;ed-mp LDA2 #0001 SUB2 ;wd-buf ADD2 LDA #21 LTH ?&e1
+        ;ed-mp LDA2 #0001 SUB2 ;ed-mp STA2
+        !&l1
+    &e1
+    &l2
+        ;ed-mend LDA2 .wd-buflen LDZ2 LTH2 #00 EQU ?&e2
+        ;ed-mend LDA2 ;wd-buf ADD2 LDA #21 LTH ?&e2
+        ;ed-mend LDA2 INC2 ;ed-mend STA2
+        !&l2
+    &e2
+    ;ed-mp LDA2 .ed-sel STZ2
+    ;ed-mend LDA2 .wd-cursor STZ2
+JMP2r
+
+@ed-scroll-up ( -- )
+    .wd-scroll LDZ2 visual-row-before .wd-scroll STZ2
+JMP2r
+
+@ed-scroll-down ( -- )
+    .wd-scroll LDZ2 .wd-text-width LDZ2 wrap-row-end
+    DUP2 .wd-buflen LDZ2 LTH2 ?&ok
+    POP2
+    JMP2r
+    &ok
+    wrap-next-start .wd-scroll STZ2
+JMP2r
+
+( ch -- flag : le caractere figure-t-il dans le 2e argument de la ligne de commande )
+@ed-arg2-has
+    .ed-ib STZ
+    #01 .ed-ic STZ
+    &loop
+        .ed-ic LDZ ;wd-arg2 LDA GTH #00 EQU ?&k0 #00 JMP2r &k0
+        ;wd-arg2 #00 .ed-ic LDZ ADD2 LDA .ed-ib LDZ EQU #00 EQU ?&k1 #01 JMP2r &k1
+        .ed-ic LDZ INC .ed-ic STZ
+        !&loop
+
 ( CARTE MEMOIRE : code propre a l'entree |0100-, code partage |2900-
 | (environ 0xf00 octets), puis les donnees ci-dessous. `make layout`
 | verifie que le code ne deborde ni sur |3000 (entree graphique) ni sur
 | |4000 (partage) : uxnasm ne signale PAS un chevauchement (piege #13).
 | wd-buf = 0xb800 octets (~46 Ko), jusqu'a |ff00. )
+|4420 @ed-mrow $2
+|4422 @ed-mp $2
+|4424 @ed-mend $2
+|4426 @ed-macc $2
+|4428 @ed-mxx $2
+|442a @ed-mw $2
+|442c @ed-munit $1
+|442d @ed-mround $1
 |4440 @ed-qry $24   ( saisie / requete de recherche : 1er octet = longueur )
 |44a0 @ed-rep $24   ( texte de remplacement )
 |3900 @ulog $480

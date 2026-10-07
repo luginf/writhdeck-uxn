@@ -16,9 +16,9 @@ ENTER = b"\r"
 SHR = b"\x1b[1;2C"      # Shift+Right
 failed = []
 
-def case(label, orig, keys, expect, **kw):
+def case(label, orig, keys, expect, args=(), **kw):
     doc.write_text(orig, encoding="utf-8")
-    out, code = run([str(doc)], keys + [S, Q], label, cwd=W, quiet=True, **kw)
+    out, code = run([str(doc), *args], keys + [S, Q], label, cwd=W, quiet=True, **kw)
     got = doc.read_text(encoding="utf-8")
     if code != 0 or got != expect:
         failed.append(label); print(f"FAIL {label}: exit {code}, {got!r} != {expect!r}")
@@ -82,5 +82,24 @@ if b"\x1b[7mhel\x1b[27m" not in out:
     failed.append("selection render"); print("FAIL selection render:", out[-300:])
 else:
     print("ok   selection is drawn in reverse video")
+# mouse (-m): terminal 24x80, text starts at column 7, row 5 (margins 6 / 4)
+def ev(b, x, y, up=False):
+    return ("\x1b[<%d;%d;%d%s" % (b, x, y, "m" if up else "M")).encode()
+DOC = "hello world\nsecond\n"
+M = ("mouse",)
+out = case("mouse click places the cursor", DOC, [ev(0, 12, 5), ev(0, 12, 5, True), b"X"], "helloX world\nsecond\n", args=M)
+if b"\x1b[?1006h" not in out or b"\x1b[?1000l" not in out:
+    failed.append("mouse enable/disable"); print("FAIL mouse reporting not enabled/disabled")
+case("mouse click on 2nd line", DOC, [ev(0, 7, 6), ev(0, 7, 6, True), b"X"], "hello world\nXsecond\n", args=M)
+case("mouse drag selects", DOC, [ev(0, 7, 5), ev(32, 12, 5), ev(0, 12, 5, True), CTRL_X, b"\x05", CTRL_V], " worldhello\nsecond\n", args=M)
+case("mouse middle click selects a word", DOC, [ev(1, 15, 5), ev(1, 15, 5, True), CTRL_C, b"\x05", CTRL_V], "hello worldworld\nsecond\n", args=M)
+case("mouse click past line end", DOC, [ev(0, 60, 5), ev(0, 60, 5, True), b"X"], "hello worldX\nsecond\n", args=M)
+case("mouse wheel scrolls then click maps to the scrolled row", LINES, [ev(65, 1, 1), ev(0, 7, 5), ev(0, 7, 5, True), b"X"], LINES.replace("line04", "Xline04", 1), args=M)
+case("mouse utf8 click", "caf\u00e9 x\n", [ev(0, 11, 5), ev(0, 11, 5, True), b"Z"], "caf\u00e9Z x\n", args=M)
+out, code = run([str(doc)], [Q, b"y"], "no mouse reporting without -m", cwd=W, quiet=True)
+if b"\x1b[?1006h" in out:
+    failed.append("mouse default off"); print("FAIL mouse reporting enabled without -m")
+else:
+    print("ok   mouse reporting is off by default")
 print("FAILED: " + ", ".join(failed) if failed else "ALL CLI FEATURE TESTS PASSED")
 raise SystemExit(1 if failed else 0)

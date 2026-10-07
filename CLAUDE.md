@@ -55,8 +55,10 @@ police (nom affiché dans la barre) ; Ctrl+H aide ; Ctrl+A/C/X/V sélection
 et presse-papiers interne (512 o) ; Maj+flèches (Maj GAUCHE seulement) ;
 Ctrl+Haut/Bas pages ; Ctrl+Début ; Suppr ; souris (voir plus bas) ;
 compteur de mots ; UTF-8 : déplacements/effacements par caractère.
-CONSOLE (`src/writhdeck-cli.tal`) : mêmes fonctions que le graphique sauf souris,
-thèmes et polices : Suppr, Début/Fin (toutes variantes ESC[1~ 4~ 7~ 8~ H F, ESC O H/F),
+CONSOLE (`src/writhdeck-cli.tal`) : mêmes fonctions que le graphique sauf thèmes et
+polices ; souris EN OPTION (`-m` du wrapper → 2e argv `mouse` → `ESC[?1000h 1002h 1006h`
+au démarrage, `l` à la sortie ; évènements SGR `ESC[<b;x;yM/m` : gauche, glisser, milieu =
+mot, molette ; position via `ed-pos-at` du cœur, partagé avec `gfx-pos-at`) : Suppr, Début/Fin (toutes variantes ESC[1~ 4~ 7~ 8~ H F, ESC O H/F),
 PgUp/PgDn, Ctrl+Home/End (ESC[1;5H/F), Maj+flèches (ESC[1;2x), Ctrl+A/C/X/V,
 Ctrl+G/F/R/T, F1 (ESC O P, ESC[11~), compteur de mots, surlignage de la
 sélection (ESC[7m/27m) et du résultat de recherche. Moteur partagé `ed-*` dans

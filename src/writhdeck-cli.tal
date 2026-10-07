@@ -86,6 +86,10 @@
 @cm-epn    $1  ( 0 = on remplit ep1, 1 = ep2 )
 @cm-shift  $1  ( 1 = Maj enfoncee dans la sequence )
 @cm-ctrl   $1  ( 1 = Ctrl enfoncee dans la sequence )
+@cm-ep3    $1  ( parametre 3 )
+@cm-sgr    $1  ( 1 = sequence ESC[< ... : souris SGR )
+@cm-mouse  $1  ( 1 = souris activee (2e argument mouse) )
+@cm-mdn    $1  ( 1 = bouton gauche enfonce )
 @cm-kind   $1  ( touche decodee : 1 haut 2 bas 3 droite 4 gauche 5 debut 6 fin 7 pgup 8 pgdn 9 suppr 10 aide )
 @cm-col    $1  ( colonnes imprimees )
 @cm-p      $2  ( position d'impression )
@@ -114,6 +118,7 @@ BRK
 | test pty doit injecter "ESC[row;colR" sinon le boot n'avance jamais
 | (voir tests/pty_harness.py). )
 @entry-finish-boot ( -- )
+    #6d ed-arg2-has ;cm-mouse STA
     #0018 .wd-rows STZ2
     #0050 .wd-cols STZ2
     hide-cursor
@@ -161,6 +166,7 @@ JMP2r
         .wd-sz-row LDZ2 #0000 NEQ2 #00 EQU ?{ .wd-sz-row LDZ2 .wd-rows STZ2 }
         .wd-sz-col LDZ2 #0000 NEQ2 #00 EQU ?{ .wd-sz-col LDZ2 .wd-cols STZ2 }
         ;on-keypress .Console/vector DEO2
+        ;cm-mouse LDA #00 EQU ?&nm con-mouse-on &nm
         wd-render
         BRK }
     DUP #30 SUB #09 GTH #00 EQU ?{ POP #00 .wd-sz-state STZ BRK }
@@ -239,19 +245,27 @@ BRK
     .wd-esc-state LDZ #03 EQU ?&s3
     ;cm-b LDA #30 SUB #0a LTH ?&digit
     ;cm-b LDA #3b EQU ?&semi
+    ;cm-b LDA #3c EQU ?&lt
     ;cm-b LDA #40 LTH ?&ignore
     #00 .wd-esc-state STZ
     con-csi-final
     JMP2r
     &digit
-    ;cm-epn LDA ?&d2
+    ;cm-epn LDA #01 EQU ?&d2
+    ;cm-epn LDA #01 GTH ?&d3
     ;cm-ep1 LDA #0a MUL ;cm-b LDA #30 SUB ADD ;cm-ep1 STA
     JMP2r
     &d2
     ;cm-ep2 LDA #0a MUL ;cm-b LDA #30 SUB ADD ;cm-ep2 STA
     JMP2r
+    &d3
+    ;cm-ep3 LDA #0a MUL ;cm-b LDA #30 SUB ADD ;cm-ep3 STA
+    JMP2r
     &semi
-    #01 ;cm-epn STA
+    ;cm-epn LDA INC ;cm-epn STA
+    JMP2r
+    &lt
+    #01 ;cm-sgr STA
     &ignore
     JMP2r
     &s1
@@ -262,14 +276,14 @@ BRK
     JMP2r
     &csi
     #02 .wd-esc-state STZ
-    #00 ;cm-ep1 STA #00 ;cm-ep2 STA #00 ;cm-epn STA
+    #00 ;cm-ep1 STA #00 ;cm-ep2 STA #00 ;cm-ep3 STA #00 ;cm-epn STA #00 ;cm-sgr STA
     JMP2r
     &ss3
     #03 .wd-esc-state STZ
     JMP2r
     &s3
     #00 .wd-esc-state STZ
-    #01 ;cm-ep1 STA #00 ;cm-ep2 STA
+    #01 ;cm-ep1 STA #00 ;cm-ep2 STA #00 ;cm-sgr STA
     con-csi-final
 JMP2r
 
@@ -282,6 +296,7 @@ JMP2r
 JMP2r
 
 @con-csi-final ( -- )
+    ;cm-sgr LDA ?&mouse
     #00 ;cm-shift STA #00 ;cm-ctrl STA
     ;cm-ep2 LDA #02 EQU ?&sh
     ;cm-ep2 LDA #05 EQU ?&ct
@@ -321,6 +336,9 @@ JMP2r
     &pgdn #08 ;cm-kind STA
     &go
     con-nav
+    JMP2r
+    &mouse
+    con-mouse
 JMP2r
 
 ( touche de navigation decodee dans cm-kind ; le sens depend du mode )
@@ -699,6 +717,91 @@ JMP2r
     ansi-clear-below
 JMP2r
 
+( ===== souris du terminal (option -m) : ESC[?1000h ESC[?1002h ESC[?1006h =====
+| evenements SGR ESC[<b;x;yM (appui, glisser) / m (relachement) ; b : 0
+| gauche, 1 milieu, 32 = mouvement, 64/65 = molette haut/bas. Capter la
+| souris desactive la selection native du terminal (Maj+glisser la rend). )
+@con-mouse-on ( -- ) ;ansi-mouse-on str-log JMP2r
+@con-mouse-off ( -- ) ;ansi-mouse-off str-log JMP2r
+
+@con-pos-at ( -- pos* )
+    ;cm-ep3 LDA #00 SWP #0001 SUB2
+    DUP2 .wd-text-top LDZ2 LTH2 ?&top
+    .wd-text-top LDZ2 SUB2
+    !&r
+    &top
+    POP2 #0000
+    &r
+    ;ed-mrow STA2
+    ;cm-ep2 LDA #00 SWP #0001 SUB2
+    .wd-eff-margin-cols LDZ2 OVR2 OVR2 LTH2 ?&lz
+    SUB2
+    !&xok
+    &lz
+    POP2 POP2 #0000
+    &xok
+    ;ed-mxx STA2
+    #01 ;ed-munit STA
+    #00 ;ed-mround STA
+    ed-pos-at
+JMP2r
+
+@con-mouse ( -- )
+    ;cm-mode LDA ?&none
+    ;cm-ep1 LDA #40 AND ?&wheel
+    ;cm-ep1 LDA #03 AND #01 EQU ?&mid
+    ;cm-ep1 LDA #03 AND ?&none
+    ;cm-b LDA #6d EQU ?&release
+    ;cm-ep1 LDA #20 AND ?&drag
+    con-pos-at
+    DUP2 .ed-sel STZ2
+    .wd-cursor STZ2
+    #01 ;cm-mdn STA
+    wd-render
+    JMP2r
+    &drag
+    ;cm-mdn LDA #00 EQU ?&none
+    con-pos-at
+    DUP2 .wd-cursor LDZ2 EQU2 ?&same
+    .wd-cursor STZ2
+    wd-render
+    JMP2r
+    &same
+    POP2
+    JMP2r
+    &release
+    #00 ;cm-mdn STA
+    .ed-sel LDZ2 .wd-cursor LDZ2 EQU2 ?&clr
+    JMP2r
+    &clr
+    ed-sel-clear
+    wd-render
+    JMP2r
+    &mid
+    con-pos-at ed-select-word
+    wd-render
+    JMP2r
+    &wheel
+    ;cm-ep1 LDA #01 AND ?&down
+    ed-scroll-up ed-scroll-up ed-scroll-up
+    wd-render
+    JMP2r
+    &down
+    ed-scroll-down ed-scroll-down ed-scroll-down
+    wd-render
+    &none
+JMP2r
+
+( le curseur peut sortir de l'ecran apres un defilement a la molette )
+@con-cursor-visible ( -- flag )
+    .wd-cursor LDZ2 visual-row-start .wd-tmp1 STZ2
+    .wd-tmp1 LDZ2 .wd-scroll LDZ2 LTH2 ?&no
+    .wd-scroll LDZ2 .wd-tmp1 LDZ2 count-visual-rows .wd-usable-rows LDZ2 LTH2
+JMP2r
+    &no
+    #00
+JMP2r
+
 @after-edit ( -- )
     #01 .wd-dirty STZ
     clamp-scroll
@@ -750,6 +853,7 @@ JMP2r
 @entry-layout ( -- ) JMP2r
 
 @quit ( -- )
+    ;cm-mouse LDA #00 EQU ?&nomouse con-mouse-off &nomouse
     alt-buf-off
     #80 .System/state DEO
 BRK
@@ -880,6 +984,9 @@ JMP2r
 
     wd-status-bar
     ;cm-mode LDA ?&prompt
+    con-cursor-visible ?&vis
+    JMP2r
+    &vis
     wd-position-cursor
     &prompt
     show-cursor
@@ -1033,6 +1140,8 @@ JMP2r
 @ansi-reverse-off ( -- ) ;ansi-reverse-off-seq str-log JMP2r
 @ansi-clear-below ( -- ) ;ansi-clear-below-seq str-log JMP2r
 
+@ansi-mouse-on [ 1b "[?1000h 1b "[?1002h 1b "[?1006h 00 ]
+@ansi-mouse-off [ 1b "[?1006l 1b "[?1002l 1b "[?1000l 00 ]
 @ansi-alt-buf-on [ 1b "[?1049h 00 ]
 @ansi-alt-buf-off [ 1b "[?1049l 00 ]
 @ansi-hide-cursor [ 1b "[?25l 00 ]

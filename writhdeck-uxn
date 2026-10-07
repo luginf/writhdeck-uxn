@@ -12,6 +12,8 @@
 #     -f, --font NAME    graphical mode font: vga (default), cream (10x16, with
 #                        French accents), prop (proportional cream of left),
 #                        creamprop (Cream 10x16 made proportional); Ctrl+P cycles
+#     -m, --mouse        terminal mode: report the mouse (click, drag, wheel); this
+#                        disables the terminal's own selection (Shift+drag brings it back)
 #     -h, --help
 #
 # The file is opened from ITS directory (uxn's File device refuses any path
@@ -24,9 +26,9 @@
 # same limitation as kibi.tal, same remedy: disable icanon/echo before
 # running the rom and restore afterwards (even on error).
 DIR=$(cd "$(dirname "$0")" && pwd)
-MODE= SIZE= ZOOM= FILE= LIGHT= FONT=
+MODE= SIZE= ZOOM= FILE= LIGHT= FONT= MOUSE=
 
-usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; }
 
 [ $# -eq 0 ] && { usage; exit 0; }
 
@@ -34,6 +36,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         -n|--new) ;;
         -l|--light) LIGHT=light ;;
+        -m|--mouse) MOUSE=mouse ;;
         -f|--font) FONT=$2; shift ;;
         --font=*) FONT=${1#--font=} ;;
         -c|--cli) MODE=cli ;;
@@ -79,7 +82,8 @@ if [ "$MODE" = cli ]; then
     TTY=`stty -g`
     stty -ignbrk -brkint -ignpar -parmrk -inpck -istrip -inlcr -igncr -icrnl -ixon \
          -ixoff -icanon onlcr -echo -isig -iexten -iuclc -ixany -imaxbel -xcase min 1 time 0
-    ${UXNCLI:-uxncli} "$ROM" ${FILE:+"$FILE"}
+    if [ -n "$MOUSE" ]; then set -- "$FILE" mouse; else set -- ${FILE:+"$FILE"}; fi
+    ${UXNCLI:-uxncli} "$ROM" "$@"
     EXIT=$?
     stty $TTY
     exit $EXIT
