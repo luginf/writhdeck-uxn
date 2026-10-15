@@ -868,7 +868,18 @@ JMP2r
 | avant lui -- une seule passe supplementaire, pas un balayage
 | quadratique. wd-tmp9/wd-tmp10/wd-tmp11 = scratch prive, JAMAIS
 | wd-tmp1 (meme raison que is-heading ci-dessus). )
+( start* -- flag : la ligne commence par ':' suivi d'un espace ou d'une tabulation )
+@is-heading-forth
+    .wd-tmp7 STZ2
+    .wd-tmp7 LDZ2 INC2 .wd-buflen LDZ2 LTH2 ?&k0 #00 JMP2r &k0
+    .wd-tmp7 LDZ2 ;wd-buf ADD2 LDA #3a EQU ?&k1 #00 JMP2r &k1
+    .wd-tmp7 LDZ2 INC2 ;wd-buf ADD2 LDA ed-is-space
+JMP2r
+
 @is-heading-t2t ( start* -- flag )
+    ( une definition Forth ": nom" en colonne 0 compte aussi comme titre :
+    | coloration et table des matieres passent toutes par ici )
+    DUP2 is-heading-forth #00 EQU ?&nof POP2 #01 JMP2r &nof
     .wd-tmp10 STZ2
 
     ( p = premiere position non-blanche depuis start )
@@ -1445,7 +1456,7 @@ JMP2r
 JMP2r
 
 @ed-is-mark ( b -- flag )
-    DUP #3d EQU SWP #23 EQU ORA
+    DUP #3a EQU OVR #3d EQU ORA SWP #23 EQU ORA
 JMP2r
 
 @ed-is-heading ( start* -- flag )

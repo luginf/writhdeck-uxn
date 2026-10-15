@@ -76,7 +76,7 @@ everything is Ctrl+letter; Ctrl+H shows this list):
 | Ctrl+F | Find (not case sensitive for ASCII): type, Enter = next, Up = previous, Esc closes |
 | Ctrl+R | Replace: find text, Enter, replacement, Enter, then `y` this one, `n` skip, `a` all, Esc stop |
 | Ctrl+G | Go to line |
-| Ctrl+T | Table of contents (headings indented by level; Up/Down, Enter, Esc) |
+| Ctrl+T | Table of contents (headings indented by level; Up/Down, Enter, Esc). Headings are `# x`, `= x =` and, for Forth, definitions starting a line with `: ` |
 | Ctrl+O | Open a file: lists the current folder and its sub-folders (Up/Down, Enter to open a file or enter a folder, `../` goes back up, Esc or Ctrl+O cancels); asks first when the document has unsaved changes (`y` discard, `s` save, other key cancels) |
 | Esc | Menu in the status bar (when nothing is selected): `o` open, `s` save, `q` quit, `h` help, any other key closes it |
 | Ctrl+D | Dark / light theme |

@@ -22,10 +22,10 @@ ENTER, DOWN, ESC = "D:0d,U:0d,W", "D:40000051,U:40000051,W", "D:1b,U:1b,W"
 QUIT = f"{ESC},T:q,W"          # Esc menu, q
 failed = []
 
-def case(label, script, expect_a, expect_c, start="a.txt"):
+def case(label, script, expect_a, expect_c, start="a.txt", content="aa\n"):
     shutil.rmtree(W / "d", ignore_errors=True)
     (W / "d" / "sub").mkdir(parents=True)
-    (W / "d" / "a.txt").write_text("aa\n"); (W / "d" / "sub" / "c.txt").write_text("cc\n")
+    (W / "d" / "a.txt").write_text(content); (W / "d" / "sub" / "c.txt").write_text("cc\n")
     env = dict(os.environ, SHIMQ="1", SDL_RENDER_DRIVER="software", SDL_VIDEODRIVER="dummy",
                SDL_AUDIODRIVER="dummy", LD_PRELOAD=str(shim), SHIM="W," + ",".join(script) + ",W")
     r = subprocess.run([UXNEMU, str(ROM), start], cwd=W / "d", env=env, timeout=30,
@@ -46,5 +46,8 @@ case("dirty: s saves then opens", ["T:Z", OPEN, "T:s", ENTER, DOWN, ENTER, QUIT]
 case("dirty: other key cancels", ["T:Z", OPEN, "T:n", "T:K", SAVE, QUIT], "ZKaa\n", "cc\n")
 case("Esc closes the picker, Ctrl+O toggles it", [OPEN, ESC, "T:K", OPEN, OPEN, "T:L", SAVE, QUIT], "KLaa\n", "cc\n")
 case("Esc with a selection only clears it (no menu)", [ctrl("a"), ESC, "T:q", SAVE, QUIT], "aa\nq", "cc\n")
+FORTH = "intro\n: sq dup * ;\n: cube dup sq * ;\n"
+case("Forth: ': name' lines are listed in the TOC", [ctrl("t"), DOWN, ENTER, "T:X", SAVE, QUIT],
+     "intro\n: sq dup * ;\nX: cube dup sq * ;\n", "cc\n", content=FORTH)
 print("FAILED: " + ", ".join(failed) if failed else "ALL PICKER TESTS PASSED")
 sys.exit(1 if failed else 0)

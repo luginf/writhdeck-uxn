@@ -128,6 +128,9 @@ mettre les nouvelles variables gfx en RAM (`;var LDA/STA`, zone |4468).
   fonctionne (branche `newfont` aussi) ; `etc/` contient ank_latin24.uf3,
   cream12.uf2, monaco12.uf2...
 
+`is-heading-forth` (cœur) : une ligne qui commence par `: ` est un titre (couleur + TOC), branché au début
+de `is-heading-t2t` pour que tous les appelants en profitent ; `:` compte comme marque dans `ed-is-mark`.
+
 ### Menu Echap et sélecteur de fichiers (graphique, modes 0x0a/0x0b/0x0c)
 Mode 0x0a = menu dans la barre d'état (`gfx-on-menu`), 0x0b = sélecteur, 0x0c = confirmation
 « changements non sauvés » avant d'ouvrir (`gfx-on-openask`). Le sélecteur RÉUTILISE la table des

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Forth definitions**: a line starting with `: ` (colon, then a blank) is treated as a
+  heading, in both builds: highlighted like a title and listed in the table of contents.
 - **Esc menu and file picker (graphical build)**: Esc opens a one-key menu in the status
   bar (`o` open, `s` save, `q` quit, `h` help) and Ctrl+O lists the current folder
   and its sub-folders to open another file, asking first when the document has
