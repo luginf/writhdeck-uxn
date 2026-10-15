@@ -75,9 +75,9 @@
 |00f8
 @wd-ins         $1  ( 1 = on est actuellement dans la selection )
 
-( variables RAM propres a la console : |4500-|45ff n'est utilise que par
+( variables RAM propres a la console : |4600-|46ff n est utilise que par
 | le graphique (police), libre ici )
-|4500
+|4c00
 @cm-mode   $1  ( 0 edition, 1 aller a la ligne, 2 recherche, 3 remplacer : chercher,
                  | 4 remplacer par, 5 remplacer : confirmer, 6 table des matieres, 7 aide )
 @cm-b      $1  ( octet recu / octet final de la sequence )
@@ -1022,7 +1022,7 @@ JMP2r
     ed-word-count wd-print-dec
     ;status-words str-log
     .wd-trunc LDZ #00 EQU ?&nt ;status-trunc str-log &nt
-    .wd-buflen LDZ2 #b800 LTH2 ?&nf ;status-full str-log &nf
+    .wd-buflen LDZ2 #b000 LTH2 ?&nf ;status-full str-log &nf
     clear-eol
     ansi-reset
 JMP2r

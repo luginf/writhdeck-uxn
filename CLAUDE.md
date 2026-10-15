@@ -19,7 +19,7 @@ avant d'y toucher, notamment pour reprendre le travail depuis une
 autre machine.
 
 > Ce fichier est volontairement court (il doit rester ouvrable en entier
-> par nos propres ROM : le tampon d'édition fait 47 104 octets, au-delà un
+> par nos propres ROM : le tampon d'édition fait 45 056 octets, au-delà un
 > fichier est tronqué et la sauvegarde est refusée). Le détail est dans :
 > - @docs/PIEGES.md : pièges Uxntal et méthodes de debug (#1 à #16) et le bug `min2`
 > - @docs/ARCHITECTURE.md : architecture console/graphique et pièges #17 à #21
@@ -50,7 +50,8 @@ autre machine.
 ### Fonctions (graphique ; la console a presque tout sauf thèmes/polices : voir plus bas)
 Ctrl+S sauver ; Ctrl+Q quitter (confirmation si modifié, trace sur stderr) ;
 Ctrl+Z/Y annuler/rétablir ; Ctrl+F recherche ; Ctrl+R remplacer (y/n/a) ;
-Ctrl+G ligne ; Ctrl+T table des matières ; Ctrl+D clair/sombre ; Ctrl+P
+Ctrl+G ligne ; Ctrl+O ouvrir un fichier (sélecteur, voir plus bas) ; Echap sans sélection = menu
+(o ouvrir, s sauver, q quitter, h aide) ; Ctrl+T table des matières ; Ctrl+D clair/sombre ; Ctrl+P
 police (nom affiché dans la barre) ; Ctrl+H aide ; Ctrl+A/C/X/V sélection
 et presse-papiers interne (512 o) ; Maj+flèches (Maj GAUCHE seulement) ;
 Ctrl+Haut/Bas pages ; Ctrl+Début ; Suppr ; souris (voir plus bas) ;
@@ -80,20 +81,23 @@ n'est un point de coupure que s'il TIENT dans la largeur (sinon
 `pty_uxn_wrap` échoue), au moins un caractère par rangée.
 
 ### Carte mémoire ACTUELLE (vérifier avec `make layout`)
-Code entrée |0100- (graphique : fin `gfx-end` ~|2019 ; console : `con-end`
-~|0997, tous deux visibles dans le .sym) ; code partagé `|2100` (finit
-~|38a6, marge ~0x5a avant les données : la prochaine addition de code oblige à décaler
-les données de 0x100 = tampon -256 o) ; données : ulog |3900, rlog |3d80 (0x480 chacun = 288
-enregistrements de 4 o), clip |4200 (0x200), wd-arg2 |4400 (2e argv, 30 o),
-gfx-inp |4440, gfx souris |4468-|4478, gfx-rep |44a0, gfx-pglyph |44d0,
-gfx-prop/pok/fsel/fbase/fmsg |44f0-|44f5, gfx-pw |4500 (largeurs police en
-banque), wd-fname |4600, wd-buf |4700 de 0xb800 = 47 104 octets (jusqu'à
-|ff00). Chaque octet de code
+Code entrée |0100- (graphique : fin `gfx-end` ~|26fc, marge ~0x100 avant core ; console : `con-end`
+~|0997, tous deux visibles dans le .sym) ; code partagé `|2800` (finit
+~|3f61, marge ~0x9f avant les données : la prochaine addition de code oblige à décaler
+les données de 0x100 = tampon -256 o) ; données : ulog |4000 (0x480 = 288
+enregistrements de 4 o), rlog |4480 (0x400 utilisés = 256 enregistrements, cf. `redo-store` ;
+|4880-|48ff = `gfx-htab`, cache de rangées du graphique), clip |4900 (0x200), wd-arg2
+|4b00 (2e argv, 30 o), gfx-inp |4b40, gfx souris |4b68-|4b78, gfx-rep |4ba0,
+gfx-pglyph |4bd0, gfx-prop/pok/fsel/fbase/fmsg |4bf0-|4bf5, gfx-pw |4c00 (largeurs
+police en banque ; la console y met ses variables `cm-*`), sélecteur de fichiers |4d00-|4d85
+(`gfx-pre` dossier courant, `gfx-prelen/llen/pp`), wd-fname |4e00, wd-buf |4f00
+de 0xb000 = 45 056 octets (jusqu'à |ff00). Chaque octet de code
 gagné rend de la place au tampon : si le code grossit au-delà de la zone,
-déplacer `core.tal` ET les données (le tampon rétrécit d'autant).
+déplacer `core.tal` ET les données (le tampon rétrécit d'autant ; la dernière fois :
+cache de rangées du rendu graphique, 47 104 → 46 848 octets, puis menu Echap + sélecteur Ctrl+O, 46 848 → 45 056 ; `BUF` de `pty_uxn_toobig.py`, `LIMIT` de `check_layout.py`).
 Historique du tampon : 48 640 o au départ → 43 264 o (annuler 2,3 Ko, TOC,
 recherche/remplacement, sélection, polices ~1 Ko, souris ~0,7 Ko, etc.) →
-47 104 o après avoir déplacé la police VGA dans la banque (-3,6 Ko de code).
+47 104 o après avoir déplacé la police VGA dans la banque (-3,6 Ko de code) → 46 848 o.
 Zero-page : gfx |0000-|002d, core |0030-|00bf (annuler |009c, marques |00aa,
 wd-cwn/cww |00bc, wd-trunc |00bf), gfx |00ba-|00bb et |00c0-|00ff : QUASI PLEINE ;
 mettre les nouvelles variables gfx en RAM (`;var LDA/STA`, zone |4468).
@@ -124,7 +128,22 @@ mettre les nouvelles variables gfx en RAM (`;var LDA/STA`, zone |4468).
   fonctionne (branche `newfont` aussi) ; `etc/` contient ank_latin24.uf3,
   cream12.uf2, monaco12.uf2...
 
+### Menu Echap et sélecteur de fichiers (graphique, modes 0x0a/0x0b/0x0c)
+Mode 0x0a = menu dans la barre d'état (`gfx-on-menu`), 0x0b = sélecteur, 0x0c = confirmation
+« changements non sauvés » avant d'ouvrir (`gfx-on-openask`). Le sélecteur RÉUTILISE la table des
+matières : `gfx-on-toc`/`gfx-toc-render`/`gfx-toc-go`/`gfx-toc-entry` dispatchent sur le mode 0x0b
+(`gfx-pick-go`, `gfx-pick-entry`) et `ed-tsel`/`ed-tcnt` servent d'index/compteur. Le listing du
+device File (`SSSS nom\n`, `---- nom/` pour un dossier, `../` ajouté par l'émulateur hors racine,
+ordre de `readdir`) est lu DANS LA QUEUE de `wd-buf` (à `wd-buf+wd-buflen`, 0x800 octets au plus) :
+valable seulement pendant que le sélecteur est ouvert. Dossier courant = `gfx-pre` (relatif, `/` final,
+vide = racine, jamais de `..` envoyé au device : `gfx-pick-trim`). Ouvrir = `wd-fname` reconstruit,
+`load-file`, curseur/défilement/annuler remis à zéro (PAS `core-boot`). Test : `tests/gfx_pick.py`
+(vrai `uxnemu` + `tests/uxnemu_shim.c`, ~1 min). Piège : `uxnasm` limite à 0x400 = 1024 labels
+(sous-labels `&x` compris, lambdas aussi) ; la ROM graphique en est à ~1015 : toute addition doit
+économiser des labels (réutiliser des routines, éviter les `&x` isolés) ou on obtient « Labels limit exceeded ».
+
 ### Souris (graphique)
+EN OPTION, désactivée par défaut : `-m` du lanceur → jeton `mouse` dans le 2e argv ; `entry-finish-boot` ne branche `Mouse/vector` que s'il est présent (`#6d ed-arg2-has`). Les cas souris de `gfx_regress.py` passent `size="640x320 mouse"`.
 `uxnemu` MASQUE le pointeur système (SDL_ShowCursor(DISABLE)) : on dessine une
 flèche 8x8 sur la couche AVANT (sprite 0x41, 0x42 bouton enfoncé, 0x40
 efface), comme `left`. Clic gauche = curseur, glisser = sélection (ancre au
@@ -135,7 +154,7 @@ puis `entry-cw`. Mode édition seulement. Pas d'auto-défilement pendant un
 glisser, pas de double-clic.
 
 ### Fichier trop gros
-`load-file` lit 0xb800 octets puis sonde 1 octet de plus (le device File
+`load-file` lit 0xb000 octets puis sonde 1 octet de plus (le device File
 continue où il s'est arrêté) ; si ça répond : `wd-trunc`=1, `save-file`
 REFUSE d'écrire (sinon la suite du fichier serait détruite), notice au
 démarrage (mode gfx 9) + `[file too big, truncated: saving disabled]` dans la

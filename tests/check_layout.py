@@ -27,8 +27,8 @@ for name, (data_label, _) in LIMITS.items():
     last_entry = max(a for n, a in labels.items() if a < core and a >= 0x100)
     if last_entry >= core:
         print("  ERREUR : l'entree deborde sur core"); ok = False
-# the docs must stay openable by our own roms (buffer = 0xa900 bytes, bigger files are truncated)
-LIMIT = 0xA900
+# the docs must stay openable by our own roms (buffer = 0xb000 bytes, bigger files are truncated)
+LIMIT = 0xB000
 for f in [R.parent / "CLAUDE.md", R.parent / "README.md", *sorted((R.parent / "docs").glob("*.md"))]:
     n = f.stat().st_size
     if n > LIMIT - 2000:

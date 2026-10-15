@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- **Esc menu and file picker (graphical build)**: Esc opens a one-key menu in the status
+  bar (`o` open, `s` save, `q` quit, `h` help) and Ctrl+O lists the current folder
+  and its sub-folders to open another file, asking first when the document has
+  unsaved changes. The picker stays inside the folder the editor was started in
+  (the File device sandbox). Undo history starts afresh for the opened file.
+- **The mouse is now off by default** in the graphical build, like in the terminal one:
+  `-m` / `--mouse` turns it on.
+- **Faster graphical rendering**: rows of text that did not change since the
+  previous frame are no longer redrawn (row cache, see `docs/ARCHITECTURE.md`
+  #22), and the word count and the insert/delete shifts are tighter loops. About
+  3 times fewer Uxn instructions per keystroke on a full screen, which matters
+  on slow emulators; no visible change. The editing buffer is 256 bytes smaller
+  (46 848 bytes) to make room for the code.
+
 ## v0.2.0
 
 - **The terminal build catches up with the graphical one**: Delete, Home/End

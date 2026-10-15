@@ -12,8 +12,9 @@
 #     -f, --font NAME    graphical mode font: vga (default), cream (10x16, with
 #                        French accents), prop (proportional cream of left),
 #                        creamprop (Cream 10x16 made proportional); Ctrl+P cycles
-#     -m, --mouse        terminal mode: report the mouse (click, drag, wheel); this
-#                        disables the terminal's own selection (Shift+drag brings it back)
+#     -m, --mouse        enable the mouse (click, drag, middle click = word, wheel); off by
+#                        default. Terminal mode: this disables the terminal's own selection
+#                        (Shift+drag brings it back)
 #     -h, --help
 #
 # The file is opened from ITS directory (uxn's File device refuses any path
@@ -100,7 +101,7 @@ case "$ZOOM" in ""|1) ZF= ;; 2) ZF=-2x ;; 3) ZF=-3x ;;
 # the size is the rom's 2nd argument: without a file, pass an empty 1st one
 case "$FONT" in ""|vga) FT= ;; cream) FT=f1 ;; prop) FT=f2 ;; creamprop) FT=f3 ;;
     *) echo "writhdeck-uxn: invalid font '$FONT' (vga, cream, prop or creamprop)" >&2; exit 2 ;; esac
-ARG2=$SIZE${LIGHT:+ $LIGHT}${FT:+ $FT}
+ARG2=$SIZE${LIGHT:+ $LIGHT}${FT:+ $FT}${MOUSE:+ $MOUSE}
 ARG2=${ARG2# }
 if [ -n "$ARG2" ]; then set -- "$FILE" "$ARG2"; else set -- ${FILE:+"$FILE"}; fi
 exec ${UXNEMU:-uxnemu} $ZF "$ROM" "$@"

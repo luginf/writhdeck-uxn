@@ -25,7 +25,7 @@ make rom rom-cli          # needs uxnasm and python3
 | --- | --- |
 | `-g` / `-c` | graphical (default; falls back to the terminal build when there is no display) / terminal build |
 | `-n` | start an empty draft, no file |
-| `-m` | terminal build: enable the mouse (click, drag to select, middle click = word, wheel). It takes the mouse away from the terminal's own selection (use Shift+drag for that) |
+| `-m` | enable the mouse, off by default in both builds (click, drag to select, middle click = word, wheel). It takes the mouse away from the terminal's own selection (use Shift+drag for that) |
 | `-s WxH` | graphical window size in pixels, e.g. `1280x800` (default 960x576) |
 | `-z 1\|2\|3` | zoom the graphical window |
 | `-l` | start in the light theme (black on white) |
@@ -77,6 +77,8 @@ everything is Ctrl+letter; Ctrl+H shows this list):
 | Ctrl+R | Replace: find text, Enter, replacement, Enter, then `y` this one, `n` skip, `a` all, Esc stop |
 | Ctrl+G | Go to line |
 | Ctrl+T | Table of contents (headings indented by level; Up/Down, Enter, Esc) |
+| Ctrl+O | Open a file: lists the current folder and its sub-folders (Up/Down, Enter to open a file or enter a folder, `../` goes back up, Esc or Ctrl+O cancels); asks first when the document has unsaved changes (`y` discard, `s` save, other key cancels) |
+| Esc | Menu in the status bar (when nothing is selected): `o` open, `s` save, `q` quit, `h` help, any other key closes it |
 | Ctrl+D | Dark / light theme |
 | Ctrl+P | Cycle the font; its name shows in the status bar |
 | Ctrl+H | Help |

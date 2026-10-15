@@ -38,6 +38,7 @@ layout: rom rom-cli
 test: rom rom-cli layout
 	UXNCLI=$(UXNCLI) python3 tests/run_all.py
 	python3 tests/gfx_regress.py
+	python3 tests/gfx_pick.py
 
 clean:
 	rm -rf bin

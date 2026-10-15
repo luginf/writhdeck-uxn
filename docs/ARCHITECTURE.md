@@ -205,5 +205,41 @@ raisonnable côté ROM : utiliser `uxnemu`. Aussi corrigé : polarité de
 `on-first-frame` (`NEQ #00 EQU ?{` relançait `core-boot` quand le boot
 avait DÉJÀ eu lieu, et ne le lançait pas sinon).
 
+### 22. Cache de rangées du rendu graphique (`gfx-htab`) : à respecter quand on touche à `gfx-render`
+
+`gfx-render` redessinait TOUT l'écran à chaque touche (une cellule 8x16 =
+une copie de glyphe par `System/expansion` + un sprite) : ~4 300 cellules,
+sans importance sous `uxnemu` (C), mais plusieurs centaines de ms par touche
+sur un Varvara émulé lentement (par exemple celui de lugforth, écrit en Forth).
+Maintenant chaque rangée écran de texte (et chaque rangée de marge) a une
+signature 16 bits dans `gfx-htab` (|4280, 64 rangées) ; si elle n'a pas changé
+depuis le rendu précédent, la rangée n'est ni effacée ni redessinée
+(`&rowdone` dans la boucle de rangées). Mesuré (document de 2,9 Ko, 36 rangées
+pleines) : ~900 000 instructions Uxn par touche avant, ~290 000 après (avec
+`ed-word-count`, `shift-right` et `shift-left` réécrits en boucles à pointeurs
+sur la pile) ; captures de 23 étapes identiques pixel pour pixel (saisie,
+sélection, marques, pages, TOC, aide, thème, polices).
+
+La signature (`gfx-row-sig`) = graine de mise en page (`gfx-calc-seed` : marge,
+largeur de texte, rangée du haut, police) + couleur de la rangée (titre,
+commentaire) + longueur + les octets de la rangée (hachage `h*5+mot`). Valeur 0
+= rangée NON cachable, toujours redessinée : (1) rangée qui portait le curseur
+au rendu précédent (`gfx-ocur`, posé par `gfx-draw-cursor`, sinon l'ancien
+curseur resterait peint) ; (2) rangée dans une marque `** // __ --` déjà ouverte
+(`wd-mend` > début de rangée) ou qui contient une paire de ces quatre octets
+(sa couleur dépend du texte PLUS LOIN, pas seulement de la rangée) ; (3) rangée
+touchée par la sélection. Pour les rangées au-delà de 64, pas de cache.
+
+Invariants : (a) tout pixel écrit dans la zone de texte HORS de `gfx-render`
+(aide, table des matières, invites...) doit passer par `draw-char` ou
+`gfx-pdraw`, qui lèvent `gfx-foreign` quand `gfx-inr` est à 0 : le rendu suivant
+vide alors tout le cache (`gfx-flush`) ; (b) si on ajoute une couleur ou un style
+qui dépend d'autre chose que de ce que `gfx-row-sig` lit (octets de la rangée,
+couleur, marques, sélection, curseur), il faut l'ajouter à la signature ou rendre
+la rangée non cachable ; (c) la barre d'état est TOUJOURS redessinée (elle n'est
+jamais dans le cache). Le cache coûte ~0x1c0 octets de code : c'est ce qui a
+obligé à décaler `core.tal` et les données de 0x100 (tampon -256 o) et à réduire
+le journal de rétablissement de 288 à 256 enregistrements (la table y loge).
+
 (Tout ce qui a été ajouté ensuite -- fonctions, polices, souris, mémoire, tests -- est décrit dans la section « État du projet » en haut de ce fichier.)
 
